@@ -1,0 +1,237 @@
+<mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1654" pageHeight="1169" math="0" shadow="0">
+  <root>
+    <mxCell id="0" />
+    <mxCell id="1" parent="0" />
+
+    <!-- Title -->
+    <mxCell id="title" value="Bedrock Invocation Log Data Lake — Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="300" y="20" width="900" height="40" as="geometry" />
+    </mxCell>
+
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <!-- LINKED ACCOUNT A -->
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <mxCell id="la_box" value="Linked Account A&#xa;466959819186" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_account;strokeColor=#CD2264;fillColor=#F4B9DA;verticalAlign=top;align=center;spacingTop=25;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+      <mxGeometry x="40" y="100" width="320" height="420" as="geometry" />
+    </mxCell>
+
+    <!-- Bedrock icon (no label) -->
+    <mxCell id="la_bedrock" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#E7157B;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
+      <mxGeometry x="100" y="160" width="60" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="la_bedrock_lbl" value="Amazon Bedrock&#xa;(Application Inference Profile)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="65" y="225" width="130" height="30" as="geometry" />
+    </mxCell>
+
+    <!-- IAM logging role icon -->
+    <mxCell id="la_logs_role" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#DD344C;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.role;" vertex="1" parent="1">
+      <mxGeometry x="235" y="165" width="50" height="50" as="geometry" />
+    </mxCell>
+    <mxCell id="la_logs_role_lbl" value="AWS IAM Role&#xa;(bedrock-logging-role)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="210" y="220" width="100" height="30" as="geometry" />
+    </mxCell>
+
+    <!-- Source S3 icon -->
+    <mxCell id="la_s3" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#7AA116;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+      <mxGeometry x="100" y="300" width="60" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="la_s3_lbl" value="Amazon Simple Storage Service&#xa;(bedrock-logs-{accountId}-us-east-1&#xa;versioned, AES-256 encrypted)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="55" y="365" width="150" height="45" as="geometry" />
+    </mxCell>
+
+    <!-- Replication role icon -->
+    <mxCell id="la_rep_role" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#DD344C;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.role;" vertex="1" parent="1">
+      <mxGeometry x="235" y="305" width="50" height="50" as="geometry" />
+    </mxCell>
+    <mxCell id="la_rep_role_lbl" value="AWS IAM Role&#xa;(bedrock-s3-replication-role)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="210" y="360" width="100" height="30" as="geometry" />
+    </mxCell>
+
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <!-- LINKED ACCOUNT B -->
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <mxCell id="lb_box" value="Linked Account B&#xa;904247366374" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_account;strokeColor=#CD2264;fillColor=#F4B9DA;verticalAlign=top;align=center;spacingTop=25;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+      <mxGeometry x="40" y="560" width="320" height="420" as="geometry" />
+    </mxCell>
+
+    <mxCell id="lb_bedrock" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#E7157B;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
+      <mxGeometry x="100" y="615" width="60" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="lb_bedrock_lbl" value="Amazon Bedrock&#xa;(Application Inference Profile)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="65" y="680" width="130" height="30" as="geometry" />
+    </mxCell>
+
+    <mxCell id="lb_s3" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#7AA116;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+      <mxGeometry x="100" y="755" width="60" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="lb_s3_lbl" value="Amazon Simple Storage Service&#xa;(bedrock-logs-{accountId}-us-east-1&#xa;versioned, AES-256 encrypted)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="55" y="820" width="150" height="45" as="geometry" />
+    </mxCell>
+
+    <mxCell id="lb_rep_role" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#DD344C;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.role;" vertex="1" parent="1">
+      <mxGeometry x="235" y="760" width="50" height="50" as="geometry" />
+    </mxCell>
+    <mxCell id="lb_rep_role_lbl" value="AWS IAM Role&#xa;(bedrock-s3-replication-role)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="210" y="815" width="100" height="30" as="geometry" />
+    </mxCell>
+
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <!-- MANAGEMENT ACCOUNT -->
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <mxCell id="ma_box" value="Management Account (Org) — 260990198475" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_account;strokeColor=#147EBA;fillColor=#E6F2F8;verticalAlign=top;align=center;spacingTop=25;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+      <mxGeometry x="500" y="80" width="1020" height="960" as="geometry" />
+    </mxCell>
+
+    <!-- Central S3 -->
+    <mxCell id="ma_s3" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#7AA116;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+      <mxGeometry x="600" y="310" width="70" height="70" as="geometry" />
+    </mxCell>
+    <mxCell id="ma_s3_lbl" value="Amazon Simple Storage Service&#xa;(bedrock-data-lake-260990198475&#xa;versioned, AES-256, BucketOwnerEnforced)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="555" y="385" width="160" height="45" as="geometry" />
+    </mxCell>
+
+    <!-- Lambda uploader -->
+    <mxCell id="ma_lambda" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#E7157B;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
+      <mxGeometry x="600" y="160" width="60" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="ma_lambda_lbl" value="AWS Lambda&#xa;(bedrock-glue-script-uploader&#xa;CFN Custom Resource)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="560" y="225" width="140" height="45" as="geometry" />
+    </mxCell>
+
+    <!-- Glue Trigger -->
+    <mxCell id="ma_trigger" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#8C4FFF;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.general;" vertex="1" parent="1">
+      <mxGeometry x="830" y="170" width="60" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="ma_trigger_lbl" value="AWS Glue Trigger&#xa;(bedrock-logs-etl-daily&#xa;cron 05:30 UTC daily)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="795" y="235" width="130" height="45" as="geometry" />
+    </mxCell>
+
+    <!-- Glue ETL Job -->
+    <mxCell id="ma_glue" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#8C4FFF;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.glue;" vertex="1" parent="1">
+      <mxGeometry x="830" y="310" width="70" height="70" as="geometry" />
+    </mxCell>
+    <mxCell id="ma_glue_lbl" value="AWS Glue ETL Job&#xa;(bedrock-logs-etl&#xa;PySpark, Glue 4.0, G.1X x2)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="795" y="385" width="140" height="45" as="geometry" />
+    </mxCell>
+
+    <!-- Processed S3 prefix -->
+    <mxCell id="ma_s3_proc" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#7AA116;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+      <mxGeometry x="1060" y="310" width="70" height="70" as="geometry" />
+    </mxCell>
+    <mxCell id="ma_s3_proc_lbl" value="Amazon Simple Storage Service&#xa;(processed/ prefix&#xa;Parquet, Hive-partitioned&#xa;account_id/year/month/day)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="1015" y="385" width="160" height="55" as="geometry" />
+    </mxCell>
+
+    <!-- Glue Database / Table -->
+    <mxCell id="ma_glue_db" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#8C4FFF;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.glue;" vertex="1" parent="1">
+      <mxGeometry x="1060" y="500" width="60" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="ma_glue_db_lbl" value="AWS Glue Data Catalog&#xa;(Database: bedrock_logs&#xa;Table: bedrock_invocations_processed)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="1015" y="565" width="150" height="45" as="geometry" />
+    </mxCell>
+
+    <!-- Athena Workgroup -->
+    <mxCell id="ma_athena" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#8C4FFF;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.athena;" vertex="1" parent="1">
+      <mxGeometry x="1280" y="380" width="70" height="70" as="geometry" />
+    </mxCell>
+    <mxCell id="ma_athena_lbl" value="Amazon Athena&#xa;(WorkGroup: bedrock-analytics&#xa;10 GB scan limit)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="1245" y="455" width="140" height="45" as="geometry" />
+    </mxCell>
+
+    <!-- CUR2 -->
+    <mxCell id="ma_cur" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#E7157B;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cost_and_usage_report;" vertex="1" parent="1">
+      <mxGeometry x="1280" y="590" width="60" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="ma_cur_lbl" value="AWS Cost and Usage Report&#xa;(cid_data_export.cur2&#xa;line_item_resource_id JOIN)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="1245" y="655" width="130" height="45" as="geometry" />
+    </mxCell>
+
+    <!-- Athena Results S3 -->
+    <mxCell id="ma_athena_res" value="" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#7AA116;labelBackgroundColor=#ffffff;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+      <mxGeometry x="1430" y="380" width="60" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="ma_athena_res_lbl" value="Amazon Simple Storage Service&#xa;(bedrock-athena-results-260990198475&#xa;30-day expiry lifecycle)" style="text;html=1;align=center;fontSize=10;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="1390" y="445" width="140" height="45" as="geometry" />
+    </mxCell>
+
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+    <!-- EDGES -->
+    <!-- ══════════════════════════════════════════════════════════════════ -->
+
+    <!-- Account A: Bedrock → logging role -->
+    <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" source="la_bedrock" target="la_logs_role" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <!-- Account A: logging role → source S3 -->
+    <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" source="la_logs_role" target="la_s3" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <!-- Account A: source S3 → replication role -->
+    <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" source="la_s3" target="la_rep_role" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <!-- Account A: replication → central S3 (cross-account) -->
+    <mxCell id="e4" value="S3 Cross-Account Replication" style="edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;strokeColor=#FF6600;fontStyle=1;fontSize=10;" edge="1" source="la_rep_role" target="ma_s3" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Account B: Bedrock → source S3 -->
+    <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" source="lb_bedrock" target="lb_s3" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <!-- Account B: source S3 → replication role -->
+    <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" source="lb_s3" target="lb_rep_role" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <!-- Account B: replication → central S3 (cross-account) -->
+    <mxCell id="e7" value="S3 Cross-Account Replication" style="edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;strokeColor=#FF6600;fontStyle=1;fontSize=10;" edge="1" source="lb_rep_role" target="ma_s3" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Lambda → central S3 (script upload at deploy) -->
+    <mxCell id="e8" value="Upload ETL script at deploy" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#E7157B;fontSize=10;" edge="1" source="ma_lambda" target="ma_s3" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Trigger → Glue ETL -->
+    <mxCell id="e9" value="Triggers daily" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#8C4FFF;fontSize=10;" edge="1" source="ma_trigger" target="ma_glue" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Glue ETL → central S3 (read raw) -->
+    <mxCell id="e10" value="Read raw JSON.GZ" style="edgeStyle=orthogonalEdgeStyle;rounded=0;fontSize=10;" edge="1" source="ma_glue" target="ma_s3" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Glue ETL → processed S3 -->
+    <mxCell id="e11" value="Write Parquet" style="edgeStyle=orthogonalEdgeStyle;rounded=0;fontSize=10;" edge="1" source="ma_glue" target="ma_s3_proc" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Glue ETL → Glue Catalog (MSCK REPAIR) -->
+    <mxCell id="e12" value="MSCK REPAIR TABLE" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#8C4FFF;fontSize=10;" edge="1" source="ma_glue" target="ma_glue_db" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Processed S3 → Glue Catalog (data location) -->
+    <mxCell id="e13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;fontSize=10;" edge="1" source="ma_s3_proc" target="ma_glue_db" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Glue Catalog → Athena -->
+    <mxCell id="e14" style="edgeStyle=orthogonalEdgeStyle;rounded=0;fontSize=10;" edge="1" source="ma_glue_db" target="ma_athena" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- CUR2 → Athena (JOIN) -->
+    <mxCell id="e15" value="JOIN on inference profile ARN&#xa;+ hourly time window" style="edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#E7157B;fontSize=10;" edge="1" source="ma_cur" target="ma_athena" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Athena → Results S3 -->
+    <mxCell id="e16" value="Query results" style="edgeStyle=orthogonalEdgeStyle;rounded=0;fontSize=10;" edge="1" source="ma_athena" target="ma_athena_res" parent="1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+  </root>
+</mxGraphModel>

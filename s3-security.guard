@@ -1,0 +1,55 @@
+# cfn-guard rules — S3 bucket security baseline
+# Enforces versioning, AES-256 encryption, and all four public-access blocks
+# on every AWS::S3::Bucket resource in the template under validation.
+#
+# Satisfies: Requirement 11.3
+
+let s3_buckets = Resources.*[ Type == 'AWS::S3::Bucket' ]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rule 1 — Versioning must be enabled
+# ─────────────────────────────────────────────────────────────────────────────
+rule s3_versioning_enabled when %s3_buckets !empty {
+    %s3_buckets.Properties.VersioningConfiguration.Status == "Enabled"
+        << S3 bucket must have VersioningConfiguration.Status set to "Enabled" to satisfy cross-account replication prerequisites and data-recovery requirements. >>
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rule 2 — Server-side encryption with AES-256 must be configured
+# ─────────────────────────────────────────────────────────────────────────────
+rule s3_aes256_encryption when %s3_buckets !empty {
+    %s3_buckets.Properties.BucketEncryption.ServerSideEncryptionConfiguration[*].ServerSideEncryptionByDefault.SSEAlgorithm == "AES256"
+        << S3 bucket must have BucketEncryption configured with SSEAlgorithm "AES256" to encrypt all objects at rest. >>
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rule 3 — BlockPublicAcls must be true
+# ─────────────────────────────────────────────────────────────────────────────
+rule s3_block_public_acls when %s3_buckets !empty {
+    %s3_buckets.Properties.PublicAccessBlockConfiguration.BlockPublicAcls == true
+        << S3 bucket must have PublicAccessBlockConfiguration.BlockPublicAcls set to true to prevent public ACL-based access. >>
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rule 4 — BlockPublicPolicy must be true
+# ─────────────────────────────────────────────────────────────────────────────
+rule s3_block_public_policy when %s3_buckets !empty {
+    %s3_buckets.Properties.PublicAccessBlockConfiguration.BlockPublicPolicy == true
+        << S3 bucket must have PublicAccessBlockConfiguration.BlockPublicPolicy set to true to prevent public bucket-policy-based access. >>
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rule 5 — IgnorePublicAcls must be true
+# ─────────────────────────────────────────────────────────────────────────────
+rule s3_ignore_public_acls when %s3_buckets !empty {
+    %s3_buckets.Properties.PublicAccessBlockConfiguration.IgnorePublicAcls == true
+        << S3 bucket must have PublicAccessBlockConfiguration.IgnorePublicAcls set to true so any public ACLs on objects are ignored. >>
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rule 6 — RestrictPublicBuckets must be true
+# ─────────────────────────────────────────────────────────────────────────────
+rule s3_restrict_public_buckets when %s3_buckets !empty {
+    %s3_buckets.Properties.PublicAccessBlockConfiguration.RestrictPublicBuckets == true
+        << S3 bucket must have PublicAccessBlockConfiguration.RestrictPublicBuckets set to true to restrict cross-account access to public bucket policies. >>
+}
