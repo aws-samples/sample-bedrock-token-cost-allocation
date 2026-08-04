@@ -61,7 +61,8 @@ aws cloudformation create-stack \
   --stack-name bedrock-data-lake \
   --template-body file://bedrock-data-lake.yaml \
   --capabilities CAPABILITY_IAM \
-  --region us-east-1
+  --region us-east-1 \
+  --profile <central-account-profile>
 ```
 
 > **Note:** `BedrockDataLakeBucketPolicy` is included in the template but the `SourceAccountReplicationRoleArns` parameter is required. At this stage, leave it out — once linked account stacks are deployed you will apply the bucket policy directly via the CLI (Step 4).
@@ -79,7 +80,8 @@ aws cloudformation create-stack \
   --template-body file://bedrock-logging.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameters ParameterKey=CentralDataLakeAccountId,ParameterValue=$CENTRAL_ACCOUNT_ID \
-  --region us-east-1
+  --region us-east-1 \
+  --profile <linked-account-profile>
 ```
 
 ### Step 3 — Retrieve the replication role ARNs
@@ -90,7 +92,8 @@ Run this in each linked account — you'll need these ARNs for Step 4:
 aws cloudformation describe-stacks \
   --stack-name bedrock-logging \
   --query 'Stacks[0].Outputs[?OutputKey==`BedrockS3ReplicationRoleArn`].OutputValue' \
-  --output text
+  --output text \
+  --profile <linked-account-profile>
 ```
 
 Expected format: `arn:aws:iam::<linked-account-id>:role/bedrock-s3-replication-role`
