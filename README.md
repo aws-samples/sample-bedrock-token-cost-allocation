@@ -13,24 +13,7 @@ This sample shows how to attribute Amazon Bedrock token costs back to individual
 
 ## Architecture
 
-```
-Linked Account(s)                      Central (Org) Account
-  bedrock-logging.yaml                   bedrock-data-lake.yaml
-
-  Bedrock service
-    ↓ model invocation logs
-  CloudWatch Logs + S3 bucket
-  (bedrock-logs-{account}-{region})
-    ↓ S3 replication (cross-account)
-                                        S3 data lake bucket
-                                        (bedrock-data-lake-{account})
-                                          {source-account}/AWSLogs/{source-account}/BedrockModelInvocationLogs/...
-                                            ↓ Glue ETL (daily, 05:30 UTC)
-                                          processed/ (Parquet, partitioned)
-                                            ↓ Athena workgroup: bedrock-analytics
-                                          Glue DB: bedrock_logs
-                                          Table: bedrock_invocations_processed
-```
+![Bedrock Data Lake Architecture](./bedrock-data-lake-architecture.jpg)
 
 **Cost attribution via Inference Profiles**
 
