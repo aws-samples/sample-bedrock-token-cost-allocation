@@ -4,7 +4,7 @@ Sends 3 test requests through the Application Inference Profile to generate
 model invocation logs for end-to-end pipeline testing.
 
 Usage:
-    python glue-etl/test_bedrock_invocation.py \
+    python scripts/test_bedrock_invocation.py \
         --profile awssteph+sandbox-RootAccountAdmin \
         --region us-east-1 \
         --stack-name bedrock-logging

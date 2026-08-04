@@ -220,7 +220,7 @@ INFERENCE_PROFILE_ARN=$(aws cloudformation describe-stacks \
   --output text --region us-east-1 \
   --profile <linked-account-profile>)
 
-python glue-etl/test_bedrock_invocation.py \
+python scripts/test_bedrock_invocation.py \
   --profile <linked-account-profile> \
   --region us-east-1 \
   --stack-name bedrock-logging
