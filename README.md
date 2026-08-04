@@ -45,6 +45,11 @@ Linked Account(s)                      Central (Org) Account
 - At least one linked account (the account that runs Bedrock workloads)
 - One central/org account (receives replicated logs)
 - AWS CUR v2 enabled and exported to Athena if you want cost join queries
+- Python 3 with `boto3` installed (`pip install boto3`) — required for the test script in Step 6
+
+**Region constraint:** Both stacks must be deployed to **`us-east-1`**. The Application Inference Profile in `bedrock-logging.yaml` references the Amazon Nova Pro foundation model ARN, which is only available in `us-east-1`. Deploying to other regions will cause the `BedrockObservabilityProfile` resource to fail.
+
+**Default parameter warning:** `bedrock-logging.yaml` has a hardcoded default value for `CentralDataLakeAccountId`. Always pass this parameter explicitly (as shown in Step 2) — never rely on the default.
 
 ---
 
@@ -61,6 +66,12 @@ aws cloudformation create-stack \
   --stack-name bedrock-data-lake \
   --template-body file://bedrock-data-lake.yaml \
   --capabilities CAPABILITY_IAM \
+  --region us-east-1 \
+  --profile <central-account-profile>
+
+# Wait for the stack to finish before proceeding to Step 2
+aws cloudformation wait stack-create-complete \
+  --stack-name bedrock-data-lake \
   --region us-east-1 \
   --profile <central-account-profile>
 ```
@@ -82,6 +93,12 @@ aws cloudformation create-stack \
   --parameters ParameterKey=CentralDataLakeAccountId,ParameterValue=$CENTRAL_ACCOUNT_ID \
   --region us-east-1 \
   --profile <linked-account-profile>
+
+# Wait for the stack to finish before proceeding to Step 3
+aws cloudformation wait stack-create-complete \
+  --stack-name bedrock-logging \
+  --region us-east-1 \
+  --profile <linked-account-profile>
 ```
 
 ### Step 3 — Retrieve the replication role ARNs
@@ -93,6 +110,7 @@ aws cloudformation describe-stacks \
   --stack-name bedrock-logging \
   --query 'Stacks[0].Outputs[?OutputKey==`BedrockS3ReplicationRoleArn`].OutputValue' \
   --output text \
+  --region us-east-1 \
   --profile <linked-account-profile>
 ```
 
