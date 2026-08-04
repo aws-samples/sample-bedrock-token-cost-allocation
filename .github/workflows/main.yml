@@ -45,4 +45,4 @@ jobs:
           pip install bandit
       - name: bandit check
         run: |
-          bandit -r glue-etl/bedrock_logs_etl.py --confidence-level high
+          bandit -r scripts/bedrock_logs_etl.py --confidence-level high
