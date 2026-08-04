@@ -1,37 +1,60 @@
-# CFM Demo Account - Infrastructure
+# Bedrock Token Cost Allocation
 
-Demo account infrastructure for the AWS Cloud Financial Management TFC demo environment.
+This sample shows how to attribute Amazon Bedrock token costs back to individual teams, projects, or business units using **Application Inference Profiles** and a centralized data lake.
+
+**What it does:**
+
+- Captures Bedrock model invocation logs (token counts, model IDs, prompts/responses) from one or more AWS accounts
+- Replicates those logs to a central S3 data lake via cross-account S3 replication
+- Runs a daily Glue ETL job that converts raw JSON.GZ logs to partitioned Parquet
+- Lets you query invocation data in Athena, including a join to AWS CUR to get per-invocation dollar cost
 
 ---
 
-## Bedrock Logging Data Lake
-
-Centralises Bedrock model invocation logs from all linked accounts into the org account for analysis via Athena.
-
-### Architecture
+## Architecture
 
 ```
-Linked Account (466959819186)          Org Account (260990198475)
+Linked Account(s)                      Central (Org) Account
   bedrock-logging.yaml                   bedrock-data-lake.yaml
-  ┌─────────────────────┐               ┌──────────────────────────┐
-  │ Bedrock service      │               │ bedrock-data-lake-{id}   │
-  │   ↓ logs             │  S3 replication│   /logs/{accountId}/... │
-  │ bedrock-logs-{id}   │ ─────────────▶│                          │
-  │   + replication role │               │ Glue: bedrock_logs DB    │
-  └─────────────────────┘               │ Athena: bedrock-analytics│
-                                        └──────────────────────────┘
-Linked Account (904247366374)
-  bedrock-logging.yaml
-  (same as above)
+
+  Bedrock service
+    ↓ model invocation logs
+  CloudWatch Logs + S3 bucket
+  (bedrock-logs-{account}-{region})
+    ↓ S3 replication (cross-account)
+                                        S3 data lake bucket
+                                        (bedrock-data-lake-{account})
+                                          logs/{source-account}/AWSLogs/...
+                                            ↓ Glue ETL (daily, 05:30 UTC)
+                                          processed/ (Parquet, partitioned)
+                                            ↓ Athena workgroup: bedrock-analytics
+                                          Glue DB: bedrock_logs
+                                          Table: bedrock_invocations_processed
 ```
 
-### Deployment Order
+**Cost attribution via Inference Profiles**
 
-**This order matters** — the org account stack must exist before the bucket policy can reference linked account role ARNs.
+`bedrock-logging.yaml` also creates an [Application Inference Profile](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-create.html) (`bedrock-observability-profile`) that wraps a foundation model. When your application invokes Bedrock through this profile, the profile ARN appears in both the invocation logs (`modelid` field) and in AWS Cost and Usage Report (CUR) line items (`line_item_resource_id`). This makes it possible to join logs to cost data — see [Athena Query Reference](./Bedrock%20Data%20Lake%20SQL.md).
 
-#### Step 1 — Deploy data lake to org account (260990198475)
+---
 
-The initial deploy omits `BedrockDataLakeBucketPolicy` because CFN's `ResourceExistenceCheck` hook validates that IAM principal ARNs in bucket policies exist before deploying. The linked account replication roles don't exist yet at this point.
+## Prerequisites
+
+- AWS CLI configured with credentials for each account
+- CloudFormation `CAPABILITY_IAM` and `CAPABILITY_NAMED_IAM` permissions
+- At least one linked account (the account that runs Bedrock workloads)
+- One central/org account (receives replicated logs)
+- AWS CUR v2 enabled and exported to Athena if you want cost join queries
+
+---
+
+## Deployment
+
+**This order matters** — the central account stack must exist before linked account stacks can reference it, and the bucket policy can only be applied after the linked account replication roles exist.
+
+### Step 1 — Deploy the data lake to the central account
+
+Deploy without the bucket policy first (the linked account replication roles don't exist yet — CloudFormation's `ResourceExistenceCheck` hook will reject the changeset if it references IAM role ARNs that don't exist):
 
 ```bash
 aws cloudformation create-stack \
@@ -41,29 +64,27 @@ aws cloudformation create-stack \
   --region us-east-1
 ```
 
-#### Step 2 — Deploy logging stack to each linked account
+> **Note:** `BedrockDataLakeBucketPolicy` is included in the template but the `SourceAccountReplicationRoleArns` parameter is required. At this stage, leave it out — once linked account stacks are deployed you will apply the bucket policy directly via the CLI (Step 4).
 
-Deploy `bedrock-logging.yaml` to both linked accounts, passing the org account ID as the `CentralDataLakeAccountId` parameter. This creates the local logging infrastructure and the replication role that ships logs to the org account.
+### Step 2 — Deploy the logging stack to each linked account
+
+Pass the central account ID as `CentralDataLakeAccountId`. This creates the local S3 bucket, CloudWatch log group, IAM roles, and the Application Inference Profile.
 
 ```bash
-# Account 466959819186
-aws cloudformation create-stack \
-  --stack-name bedrock-logging \
-  --template-body file://bedrock-logging.yaml \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --parameters ParameterKey=CentralDataLakeAccountId,ParameterValue=260990198475 \
-  --region us-east-1
+CENTRAL_ACCOUNT_ID=<your-central-account-id>
 
-# Account 904247366374
+# Repeat for each linked account
 aws cloudformation create-stack \
   --stack-name bedrock-logging \
   --template-body file://bedrock-logging.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
-  --parameters ParameterKey=CentralDataLakeAccountId,ParameterValue=260990198475 \
+  --parameters ParameterKey=CentralDataLakeAccountId,ParameterValue=$CENTRAL_ACCOUNT_ID \
   --region us-east-1
 ```
 
-#### Step 3 — Get replication role ARNs from linked accounts
+### Step 3 — Retrieve the replication role ARNs
+
+Run this in each linked account — you'll need these ARNs for Step 4:
 
 ```bash
 aws cloudformation describe-stacks \
@@ -72,134 +93,230 @@ aws cloudformation describe-stacks \
   --output text
 ```
 
-Expected ARNs:
-- `arn:aws:iam::466959819186:role/bedrock-s3-replication-role`
-- `arn:aws:iam::904247366374:role/bedrock-s3-replication-role`
+Expected format: `arn:aws:iam::<linked-account-id>:role/bedrock-s3-replication-role`
 
-#### Step 4 — Add bucket policy back to data lake template
+Both stacks are now deployed. Continue to the **Manual Steps Required After Stack Deployment** section below.
 
-Add `BedrockDataLakeBucketPolicy` back into `bedrock-data-lake.yaml` (it's noted with a comment in the template), then update the org account stack:
+---
+
+## Manual Steps Required After Stack Deployment
+
+> These two steps **cannot be automated via CloudFormation** and must be run manually after both stacks are deployed.
+
+### Step 4 — Apply the data lake bucket policy (run in central account)
+
+The bucket policy grants the linked account replication roles permission to write into the central S3 bucket. It must be applied via the CLI rather than CloudFormation — CFN stores the resolved IAM role ID at deploy time which can become stale if roles are recreated, causing silent `AccessDenied` on replication.
+
+First collect the values you need:
 
 ```bash
-aws cloudformation update-stack \
-  --stack-name bedrock-data-lake \
-  --template-body file://bedrock-data-lake.yaml \
-  --capabilities CAPABILITY_IAM \
-  --parameters \
-    ParameterKey=SourceAccountReplicationRoleArns,ParameterValue="arn:aws:iam::466959819186:role/bedrock-s3-replication-role,arn:aws:iam::904247366374:role/bedrock-s3-replication-role" \
-  --region us-east-1
+# Central account ID
+CENTRAL_ACCOUNT_ID=$(aws sts get-caller-identity \
+  --query Account --output text \
+  --profile <central-account-profile>)
+
+# Replication role ARN(s) — run this in each linked account
+REPLICATION_ROLE_ARN=$(aws cloudformation describe-stacks \
+  --stack-name bedrock-logging \
+  --query 'Stacks[0].Outputs[?OutputKey==`BedrockS3ReplicationRoleArn`].OutputValue' \
+  --output text --region us-east-1 \
+  --profile <linked-account-profile>)
 ```
 
-The bucket policy grants the replication roles `s3:ReplicateObject`, `s3:ReplicateDelete`, `s3:ReplicateTags`, and `s3:ObjectOwnerOverrideToBucketOwner` on the `logs/` prefix. Without this, replication will fail with `AccessDenied`.
-
-#### Step 5 — Enable Bedrock model invocation logging (manual, per linked account)
-
-This cannot be done via CloudFormation. Run in each linked account after the logging stack is deployed:
+Then apply the policy to the central account bucket:
 
 ```bash
-# Get the role ARN and bucket name from stack outputs first
-ROLE_ARN=$(aws cloudformation describe-stacks \
+aws s3api put-bucket-policy \
+  --bucket bedrock-data-lake-${CENTRAL_ACCOUNT_ID} \
+  --region us-east-1 \
+  --profile <central-account-profile> \
+  --policy "{
+    \"Version\": \"2012-10-17\",
+    \"Statement\": [
+      {
+        \"Sid\": \"DenyNonHTTPS\",
+        \"Effect\": \"Deny\",
+        \"Principal\": \"*\",
+        \"Action\": \"s3:*\",
+        \"Resource\": [
+          \"arn:aws:s3:::bedrock-data-lake-${CENTRAL_ACCOUNT_ID}\",
+          \"arn:aws:s3:::bedrock-data-lake-${CENTRAL_ACCOUNT_ID}/*\"
+        ],
+        \"Condition\": {\"Bool\": {\"aws:SecureTransport\": \"false\"}}
+      },
+      {
+        \"Sid\": \"AllowCrossAccountReplication\",
+        \"Effect\": \"Allow\",
+        \"Principal\": {
+          \"AWS\": [\"${REPLICATION_ROLE_ARN}\"]
+        },
+        \"Action\": [
+          \"s3:ReplicateObject\",
+          \"s3:ReplicateDelete\",
+          \"s3:ReplicateTags\",
+          \"s3:ObjectOwnerOverrideToBucketOwner\"
+        ],
+        \"Resource\": \"arn:aws:s3:::bedrock-data-lake-${CENTRAL_ACCOUNT_ID}/logs/*\"
+      }
+    ]
+  }"
+```
+
+If you have multiple linked accounts, add each replication role ARN to the `AWS` array in `AllowCrossAccountReplication`.
+
+### Step 5 — Enable Bedrock model invocation logging (run in each linked account)
+
+This enables Bedrock to write invocation logs to both CloudWatch and S3. Run in each linked account:
+
+```bash
+LOGGING_ROLE_ARN=$(aws cloudformation describe-stacks \
   --stack-name bedrock-logging \
   --query 'Stacks[0].Outputs[?OutputKey==`BedrockLoggingRoleArn`].OutputValue' \
-  --output text)
+  --output text --region us-east-1 \
+  --profile <linked-account-profile>)
 
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+LINKED_ACCOUNT_ID=$(aws sts get-caller-identity \
+  --query Account --output text \
+  --profile <linked-account-profile>)
 
 aws bedrock put-model-invocation-logging-configuration \
   --logging-config "{
     \"cloudWatchConfig\": {
       \"logGroupName\": \"/aws/bedrock/modelinvocations\",
-      \"roleArn\": \"$ROLE_ARN\"
+      \"roleArn\": \"$LOGGING_ROLE_ARN\"
     },
     \"s3Config\": {
-      \"bucketName\": \"bedrock-logs-${ACCOUNT_ID}-us-east-1\",
-      \"keyPrefix\": \"${ACCOUNT_ID}/\"
+      \"bucketName\": \"bedrock-logs-${LINKED_ACCOUNT_ID}-us-east-1\",
+      \"keyPrefix\": \"${LINKED_ACCOUNT_ID}/\"
     },
     \"textDataDeliveryEnabled\": true,
     \"imageDataDeliveryEnabled\": true,
     \"embeddingDataDeliveryEnabled\": true
   }" \
-  --region us-east-1
+  --region us-east-1 \
+  --profile <linked-account-profile>
 ```
 
-### Known Issues & Gotchas
-
-**CFN ResourceExistenceCheck on bucket policies**
-CFN's early validation hook rejects bucket policies where the IAM principal ARNs don't yet exist. This is why the initial deploy omits the bucket policy — deploy linked account stacks first, then apply the bucket policy via the CLI (see below).
-
-**Why the bucket policy must be applied via CLI, not CFN update-stack**
-When CFN resolves an IAM role ARN in a bucket policy principal, it stores the role's unique ID rather than the ARN. If the role was created after the initial stack deploy, or deleted and recreated, the stored ID can become stale and replication fails silently with `AccessDenied`. The `put-bucket-policy` CLI call is reliable because S3 resolves ARNs to current role IDs at write time. Use this instead of `update-stack` for the bucket policy:
+Verify logging is enabled:
 
 ```bash
-aws s3api put-bucket-policy \
-  --bucket bedrock-data-lake-260990198475 \
+aws bedrock get-model-invocation-logging-configuration \
   --region us-east-1 \
-  --policy '{
-    "Version": "2012-10-17",
-    "Statement": [
-      {
-        "Sid": "DenyNonHTTPS",
-        "Effect": "Deny",
-        "Principal": "*",
-        "Action": "s3:*",
-        "Resource": [
-          "arn:aws:s3:::bedrock-data-lake-260990198475",
-          "arn:aws:s3:::bedrock-data-lake-260990198475/*"
-        ],
-        "Condition": {"Bool": {"aws:SecureTransport": "false"}}
-      },
-      {
-        "Sid": "AllowCrossAccountReplication",
-        "Effect": "Allow",
-        "Principal": {
-          "AWS": [
-            "arn:aws:iam::466959819186:role/bedrock-s3-replication-role",
-            "arn:aws:iam::904247366374:role/bedrock-s3-replication-role"
-          ]
-        },
-        "Action": [
-          "s3:ReplicateObject",
-          "s3:ReplicateDelete",
-          "s3:ReplicateTags",
-          "s3:ObjectOwnerOverrideToBucketOwner"
-        ],
-        "Resource": "arn:aws:s3:::bedrock-data-lake-260990198475/logs/*"
-      }
-    ]
-  }'
+  --profile <linked-account-profile>
 ```
 
-**CRAWL_NEW_FOLDERS_ONLY requires LOG for both SchemaChangePolicy values**
-When `RecrawlBehavior: CRAWL_NEW_FOLDERS_ONLY`, Glue requires both `UpdateBehavior` and `DeleteBehavior` to be `LOG`. Setting `UpdateBehavior: UPDATE_IN_DATABASE` will fail with HTTP 400.
+---
 
-**S3 replication only applies to new objects**
-Objects written before the replication rule was configured are not replicated. Invoke a new model request after all stacks are deployed to generate a fresh log entry.
+### Step 6 — Verify end-to-end
 
-**Replication requires both source role permissions AND destination bucket policy**
-Cross-account S3 replication needs:
-1. The replication role in the source account can read the source bucket (handled by `BedrockS3ReplicationRole` in `bedrock-logging.yaml`)
-2. The destination bucket policy explicitly allows the source replication role to write (handled by the `put-bucket-policy` call above)
+Once both manual steps above are complete:
 
-Both are required. Removing either breaks replication — objects won't replicate and you'll see `AccessDenied` in S3 replication metrics.
+1. Make a test Bedrock invocation in the linked account:
 
-### Querying Logs in Athena
+```bash
+INFERENCE_PROFILE_ARN=$(aws cloudformation describe-stacks \
+  --stack-name bedrock-logging \
+  --query 'Stacks[0].Outputs[?OutputKey==`BedrockInferenceProfileArn`].OutputValue' \
+  --output text --region us-east-1 \
+  --profile <linked-account-profile>)
 
-After logs are flowing, use the `bedrock-analytics` workgroup in the org account:
+python glue-etl/test_bedrock_invocation.py \
+  --profile <linked-account-profile> \
+  --region us-east-1 \
+  --stack-name bedrock-logging
+```
+
+2. Check logs appeared in the linked account source bucket (may take a few minutes):
+
+```bash
+aws s3 ls s3://bedrock-logs-${LINKED_ACCOUNT_ID}-us-east-1/${LINKED_ACCOUNT_ID}/AWSLogs/ \
+  --recursive --profile <linked-account-profile>
+```
+
+3. Check replication arrived in the central account data lake:
+
+```bash
+aws s3 ls s3://bedrock-data-lake-${CENTRAL_ACCOUNT_ID}/logs/${LINKED_ACCOUNT_ID}/AWSLogs/ \
+  --recursive --profile <central-account-profile>
+```
+
+4. Run the Glue ETL job immediately (it normally runs daily at 05:30 UTC):
+
+```bash
+aws glue start-job-run \
+  --job-name bedrock-logs-etl \
+  --region us-east-1 \
+  --profile <central-account-profile>
+```
+
+5. Query in Athena using the `bedrock-analytics` workgroup — see [Athena Query Reference](./Bedrock%20Data%20Lake%20SQL.md)
+
+---
+
+## Querying Logs
+
+All queries use the `bedrock-analytics` workgroup in the central account. The main table is `bedrock_logs.bedrock_invocations_processed`.
 
 ```sql
--- Count invocations by account and model
-SELECT account_id, modelid, COUNT(*) as invocations
-FROM bedrock_logs.bedrock_invocations
+-- Invocations by account and model
+SELECT account_id, modelid, COUNT(*) AS invocations
+FROM bedrock_logs.bedrock_invocations_processed
 WHERE year='2026' AND month='07'
 GROUP BY account_id, modelid
 ORDER BY invocations DESC;
 ```
 
+For the full query reference including the CUR cost join, see [Bedrock Data Lake SQL.md](./Bedrock%20Data%20Lake%20SQL.md).
+
+**Joining to CUR:** Bedrock invocations made through an Application Inference Profile use the profile ARN as the `modelid` in logs and as `line_item_resource_id` in CUR. Joining on these two fields plus a time window gives you per-invocation cost estimates. See the SQL file for the full join query.
+
+---
+
+## Known Issues & Gotchas
+
+**CloudFormation ResourceExistenceCheck on bucket policies**  
+CloudFormation's early validation hook rejects bucket policies where referenced IAM principal ARNs don't yet exist. This is why the central account stack is deployed without the bucket policy first — deploy linked account stacks first, then apply the bucket policy via CLI (Step 4).
+
+**Why the bucket policy must be applied via CLI**  
+When CloudFormation resolves an IAM role ARN in a bucket policy principal, it stores the role's unique ID rather than the ARN. If the role was created after the initial stack deploy, or deleted and recreated, the stored ID becomes stale and replication fails silently with `AccessDenied`. The `put-bucket-policy` CLI call resolves ARNs to current role IDs at write time and avoids this issue.
+
+**S3 replication only applies to new objects**  
+Objects written before the replication rule was configured are not replicated. Invoke a new model request after all stacks are deployed to generate a fresh log entry.
+
+**Replication requires both source role permissions AND destination bucket policy**  
+Cross-account S3 replication needs:
+1. The replication role in the source account can read the source bucket (handled by `BedrockS3ReplicationRole` in `bedrock-logging.yaml`)
+2. The destination bucket policy explicitly allows the source replication role to write (Step 4 above)
+
+Both are required — removing either will cause `AccessDenied` on replication.
+
+**Glue CRAWL_NEW_FOLDERS_ONLY constraint**  
+When `RecrawlBehavior: CRAWL_NEW_FOLDERS_ONLY`, Glue requires both `UpdateBehavior` and `DeleteBehavior` to be `LOG`. Setting `UpdateBehavior: UPDATE_IN_DATABASE` will fail with HTTP 400.
+
+**MSCK REPAIR TABLE vs Glue Crawler**  
+The ETL job calls `MSCK REPAIR TABLE` after writing Parquet to register new partitions in the Glue catalog. A Glue Crawler is not used. If you add data outside the ETL job (e.g., manual S3 uploads), run `MSCK REPAIR TABLE bedrock_logs.bedrock_invocations_processed` manually in Athena.
+
+---
+
 ## Security
 
 See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
 
+**Additional hardening recommendation:**  
+The `AllowCrossAccountReplication` bucket policy statement grants access based on role ARNs. Consider adding a `PrincipalOrgID` condition to restrict access to principals inside your AWS Organization:
+
+```json
+"Condition": {
+  "StringEquals": {
+    "aws:PrincipalOrgID": "o-xxxxxxxxxx"
+  }
+}
+```
+
+This provides defense-in-depth so a mistyped or compromised role ARN from outside your organization cannot replicate data into the lake.
+
+---
+
 ## License
 
 This library is licensed under the MIT-0 License. See the LICENSE file.
-

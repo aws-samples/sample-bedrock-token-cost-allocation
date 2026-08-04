@@ -1,12 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: 'Bedrock Logging Data Lake - Central account resources for aggregating Bedrock invocation logs'
 
-Parameters:
-  SourceAccountReplicationRoleArns:
-    Type: CommaDelimitedList
-    Description: 'Comma-separated list of IAM role ARNs from source accounts that will replicate to this bucket (e.g. arn:aws:iam::466959819186:role/bedrock-s3-replication-role,arn:aws:iam::904247366374:role/bedrock-s3-replication-role)'
-    ConstraintDescription: 'Must be a comma-separated list of valid IAM role ARNs'
-
 Resources:
   # ---------------------------------------------------------------------------
   # S3 Access Logging Bucket
@@ -161,51 +155,6 @@ Resources:
       DatabaseInput:
         Name: bedrock_logs
         Description: 'Bedrock model invocation logs from all source accounts'
-
-  # ---------------------------------------------------------------------------
-  # Component 4: Data Lake Bucket Policy
-  # Satisfies: Requirements 1.5, 1.6, 2.5
-  # NOTE: Omitted from initial deploy — linked account replication roles must
-  # exist first or CFN's ResourceExistenceCheck will reject the changeset.
-  # Add back and update-stack once bedrock-logging.yaml is deployed to all
-  # linked accounts.
-  # ---------------------------------------------------------------------------
-  BedrockDataLakeBucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref BedrockDataLakeBucket
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Sid: DenyNonHTTPS
-            Effect: Deny
-            Principal: '*'
-            Action: 's3:*'
-            Resource:
-              - !GetAtt BedrockDataLakeBucket.Arn
-              - !Sub '${BedrockDataLakeBucket.Arn}/*'
-            Condition:
-              Bool:
-                'aws:SecureTransport': false
-          # SECURITY NOTE (customers): this grant is scoped only to the role
-          # ARNs passed in SourceAccountReplicationRoleArns and has no additional
-          # guardrail. Consider adding a PrincipalOrgID-like condition to limit
-          # access to principals inside your AWS Organization, e.g.:
-          #     Condition:
-          #       StringEquals:
-          #         'aws:PrincipalOrgID': 'o-xxxxxxxxxx'
-          # This provides defence-in-depth so that even a mistyped or compromised
-          # role ARN cannot replicate into the lake from outside your org.
-          - Sid: AllowCrossAccountReplication
-            Effect: Allow
-            Principal:
-              AWS: !Ref SourceAccountReplicationRoleArns
-            Action:
-              - s3:ReplicateObject
-              - s3:ReplicateDelete
-              - s3:ReplicateTags
-              - s3:ObjectOwnerOverrideToBucketOwner
-            Resource: !Sub '${BedrockDataLakeBucket.Arn}/*'
 
   # ---------------------------------------------------------------------------
   # Component 6: Custom resource — uploads Glue ETL script to S3 at deploy time
