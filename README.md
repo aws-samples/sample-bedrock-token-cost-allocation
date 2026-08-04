@@ -24,7 +24,7 @@ Linked Account(s)                      Central (Org) Account
     ↓ S3 replication (cross-account)
                                         S3 data lake bucket
                                         (bedrock-data-lake-{account})
-                                          logs/{source-account}/AWSLogs/...
+                                          {source-account}/AWSLogs/{source-account}/BedrockModelInvocationLogs/...
                                             ↓ Glue ETL (daily, 05:30 UTC)
                                           processed/ (Parquet, partitioned)
                                             ↓ Athena workgroup: bedrock-analytics
@@ -229,14 +229,14 @@ python glue-etl/test_bedrock_invocation.py \
 2. Check logs appeared in the linked account source bucket (may take a few minutes):
 
 ```bash
-aws s3 ls s3://bedrock-logs-${LINKED_ACCOUNT_ID}-us-east-1/${LINKED_ACCOUNT_ID}/AWSLogs/ \
+aws s3 ls s3://bedrock-logs-${LINKED_ACCOUNT_ID}-us-east-1/AWSLogs/${LINKED_ACCOUNT_ID}/BedrockModelInvocationLogs/ \
   --recursive --profile <linked-account-profile>
 ```
 
 3. Check replication arrived in the central account data lake:
 
 ```bash
-aws s3 ls s3://bedrock-data-lake-${CENTRAL_ACCOUNT_ID}/logs/${LINKED_ACCOUNT_ID}/AWSLogs/ \
+aws s3 ls s3://bedrock-data-lake-${CENTRAL_ACCOUNT_ID}/${LINKED_ACCOUNT_ID}/AWSLogs/${LINKED_ACCOUNT_ID}/BedrockModelInvocationLogs/ \
   --recursive --profile <central-account-profile>
 ```
 
