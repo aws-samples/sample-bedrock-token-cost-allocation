@@ -38,6 +38,8 @@ This sample shows how to attribute Amazon Bedrock token costs back to individual
 
 ## Deployment
 
+> **Using Kiro or an AI assistant?** See [deploy.md](./deploy.md) — it includes an authentication setup guide (named profiles, SSO, or environment variables) and all commands with environment variables pre-wired. Kiro will ask how you want to authenticate before running any commands.
+
 **This order matters** — the central account stack must exist before linked account stacks can reference it, and the bucket policy can only be applied after the linked account replication roles exist.
 
 ### Step 1 — Deploy the data lake to the central account
