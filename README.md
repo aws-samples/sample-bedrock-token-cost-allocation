@@ -302,7 +302,7 @@ ORDER BY invocations DESC;
 
 For the full query reference including the CUR cost join, see [Bedrock Data Lake SQL.md](./Bedrock%20Data%20Lake%20SQL.md).
 
-**Joining to CUR:** Bedrock invocations made through an Application Inference Profile use the profile ARN as the `modelid` in logs and as `line_item_resource_id` in CUR. Joining on these two fields plus a time window gives you per-invocation cost estimates. See the SQL file for the full join query.
+**Joining to CUR:** Bedrock invocations made through an Application Inference Profile use the profile ARN as the `modelid` in logs and as `line_item_resource_id` in CUR. Joining on these two fields plus a time window gives you per-invocation cost estimates. You can also join on `identity_arn` matched against `line_item_iam_principal` in CUR to attribute cost by IAM role and pull in any resource tags (`team`, `project`, etc.) applied to that role. See the SQL file for both join patterns.
 
 ---
 

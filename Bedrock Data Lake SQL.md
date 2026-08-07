@@ -12,6 +12,75 @@ SELECT * FROM bedrock_logs.bedrock_invocations_processed LIMIT 10;
 
 ---
 
+## Cost attribution by IAM principal — joined on identity ARN and CUR tags
+
+Joins Bedrock invocation logs to CUR on `identity_arn` matched against `line_item_iam_principal`. Add whichever `resource_tags_user_*` columns you have activated in your CUR to the SELECT — they come straight from the CUR table with no transformation.
+
+> **CUR prerequisite:** `line_item_iam_principal` is available in CUR v2. Enable it under **Cost & Usage Report → Report content**. Activated cost allocation tags appear as `resource_tags_user_<tag_key>` columns (hyphens in tag keys become underscores).
+
+```sql
+SELECT
+    b.account_id,
+    b.identity_arn,
+    regexp_replace(b.identity_arn, '/[^/]+$', '') AS identity_role_arn,
+    c.line_item_iam_principal,
+    tags,
+    -- Add your activated CUR tag columns here, e.g.:
+    --   c.resource_tags_user_team,
+    --   c.resource_tags_user_project,
+    --   c.resource_tags_user_cost_centre
+    b.modelid,
+    DATE_FORMAT(from_iso8601_timestamp(b.timestamp), '%Y-%m-%d') AS log_date,
+    COUNT(b.requestid)               AS invocation_count,
+    SUM(b.input.inputtokencount)     AS total_input_tokens,
+    SUM(b.output.outputtokencount)   AS total_output_tokens,
+    SUM(c.line_item_unblended_cost)  AS total_unblended_cost
+FROM bedrock_logs.bedrock_invocations_processed b
+JOIN cid_data_export.cur2 c
+    ON  b.account_id = c.line_item_usage_account_id
+    AND b.modelid    = c.line_item_resource_id
+    -- Strip STS session suffix so assumed-role/my-role/session matches role/my-role in CUR
+    AND regexp_replace(b.identity_arn, '/[^/]+$', '') = regexp_replace(c.line_item_iam_principal, '/[^/]+$', '')
+    AND date_trunc('hour', from_iso8601_timestamp(b.timestamp)) >= c.line_item_usage_start_date
+    AND date_trunc('hour', from_iso8601_timestamp(b.timestamp))  < c.line_item_usage_end_date
+WHERE b.modelid LIKE '%infer%'
+  AND c.line_item_resource_id LIKE '%infer%'
+  AND c.line_item_iam_principal IS NOT NULL
+GROUP BY
+    b.account_id,
+    b.identity_arn,
+    regexp_replace(b.identity_arn, '/[^/]+$', ''),
+    c.line_item_iam_principal,
+    -- Add your tag columns to GROUP BY to match the SELECT above
+    b.modelid,
+    tags,
+    DATE_FORMAT(from_iso8601_timestamp(b.timestamp), '%Y-%m-%d')
+ORDER BY total_unblended_cost DESC;
+```
+
+### Join logic
+
+| Bedrock field | CUR field | Notes |
+|---|---|---|
+| `account_id` | `line_item_usage_account_id` | Exact match |
+| `modelid` | `line_item_resource_id` | Both are inference profile ARNs |
+| `regexp_replace(identity_arn, '/[^/]+$', '')` | `regexp_replace(line_item_iam_principal, '/[^/]+$', '')` | Strip STS session suffix so `assumed-role/my-role/session` matches `role/my-role` |
+| `date_trunc('hour', timestamp)` | `line_item_usage_start_date` → `line_item_usage_end_date` | Bedrock log hour falls within CUR hourly bucket |
+
+### Why the ARN normalisation is needed
+
+Bedrock logs record the full STS session ARN:
+```
+arn:aws:sts::123456789012:assumed-role/my-role/session-name
+```
+CUR records the IAM role ARN:
+```
+arn:aws:iam::123456789012:role/my-role
+```
+`regexp_replace(..., '/[^/]+$', '')` strips the last path segment from both sides before comparing, aligning them at the role level.
+
+---
+
 ## Invocations by account and model
 
 ```sql
