@@ -27,8 +27,8 @@ This sample shows how to attribute Amazon Bedrock token costs back to individual
 - CloudFormation `CAPABILITY_IAM` and `CAPABILITY_NAMED_IAM` permissions
 - At least one linked account (the account that runs Bedrock workloads)
 - One central/org account (receives replicated logs)
-- AWS CUR v2 enabled and exported to Athena if you want cost join queries
 - Python 3 with `boto3` installed (`pip install boto3`) — required for the test script in Step 6
+- (Optional) AWS CUR v2 enabled and exported to Athena if you want cost join queries
 
 **Region constraint:** Both stacks must be deployed to **`us-east-1`**. The Application Inference Profile in `bedrock-logging.yaml` references the Amazon Nova Pro foundation model ARN, which is only available in `us-east-1`. Deploying to other regions will cause the `BedrockObservabilityProfile` resource to fail.
 
