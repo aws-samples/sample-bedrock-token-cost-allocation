@@ -15,7 +15,7 @@ from awsglue.job import Job
 from pyspark.context import SparkContext
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
-    StructType, StructField, StringType, IntegerType
+    StructType, StructField, StringType, IntegerType, MapType
 )
 
 args = getResolvedOptions(sys.argv, ['JOB_NAME', 'SOURCE_BUCKET', 'PROCESSED_PREFIX'])
@@ -41,6 +41,10 @@ LOG_SCHEMA = StructType([
     StructField('requestId', StringType(), True),
     StructField('operation', StringType(), True),
     StructField('modelId', StringType(), True),
+    StructField('identity', StructType([
+        StructField('arn', StringType(), True),
+    ]), True),
+    StructField('requestMetadata', MapType(StringType(), StringType()), True),
     StructField('input', StructType([
         StructField('inputBodyJson', StringType(), True),
         StructField('inputContentType', StringType(), True),
@@ -62,8 +66,10 @@ df = spark.read \
     .json(raw_path)
 
 # Add partition columns derived from timestamp and accountId
+# identity_arn is extracted from the nested identity struct for easy querying
 df_processed = df \
     .withColumn('account_id', F.col('accountId')) \
+    .withColumn('identity_arn', F.col('identity.arn')) \
     .withColumn('year',  F.date_format(F.to_timestamp(F.col('timestamp')), 'yyyy')) \
     .withColumn('month', F.date_format(F.to_timestamp(F.col('timestamp')), 'MM')) \
     .withColumn('day',   F.date_format(F.to_timestamp(F.col('timestamp')), 'dd')) \
@@ -73,6 +79,8 @@ df_processed = df \
     .withColumnRenamed('operation',     'operation') \
     .withColumnRenamed('modelId',       'modelid') \
     .withColumnRenamed('region',        'region') \
+    .withColumnRenamed('requestMetadata', 'requestmetadata') \
+    .drop('identity') \
     .drop('accountId')
 
 # Write Parquet partitioned by account_id/year/month/day
