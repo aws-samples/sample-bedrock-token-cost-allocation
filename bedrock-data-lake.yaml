@@ -222,7 +222,7 @@ Resources:
           from awsglue.job import Job
           from pyspark.context import SparkContext
           from pyspark.sql import functions as F
-          from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+          from pyspark.sql.types import StructType, StructField, StringType, IntegerType, MapType
 
           args = getResolvedOptions(sys.argv, ['JOB_NAME', 'SOURCE_BUCKET', 'PROCESSED_PREFIX'])
           sc = SparkContext()
@@ -245,6 +245,10 @@ Resources:
               StructField('requestId', StringType(), True),
               StructField('operation', StringType(), True),
               StructField('modelId', StringType(), True),
+              StructField('identity', StructType([
+                  StructField('arn', StringType(), True),
+              ]), True),
+              StructField('requestMetadata', MapType(StringType(), StringType()), True),
               StructField('input', StructType([
                   StructField('inputBodyJson', StringType(), True),
                   StructField('inputContentType', StringType(), True),
@@ -262,6 +266,7 @@ Resources:
 
           df_processed = df \
               .withColumn('account_id', F.col('accountId')) \
+              .withColumn('identity_arn', F.col('identity.arn')) \
               .withColumn('year',  F.date_format(F.to_timestamp(F.col('timestamp')), 'yyyy')) \
               .withColumn('month', F.date_format(F.to_timestamp(F.col('timestamp')), 'MM')) \
               .withColumn('day',   F.date_format(F.to_timestamp(F.col('timestamp')), 'dd')) \
@@ -269,6 +274,8 @@ Resources:
               .withColumnRenamed('schemaVersion', 'schemaversion') \
               .withColumnRenamed('requestId',     'requestid') \
               .withColumnRenamed('modelId',       'modelid') \
+              .withColumnRenamed('requestMetadata', 'requestmetadata') \
+              .drop('identity') \
               .drop('accountId')
 
           df_processed.write \
@@ -311,7 +318,7 @@ Resources:
       ServiceToken: !GetAtt GlueScriptUploaderFunction.Arn
       Bucket: !Sub 'bedrock-data-lake-${AWS::AccountId}'
       Key: glue-scripts/bedrock_logs_etl.py
-      Version: '2'
+      Version: '3'
 
   # ---------------------------------------------------------------------------
   # Component 6: Glue ETL Job — converts raw JSON.GZ to partitioned Parquet
@@ -445,6 +452,10 @@ Resources:
               Type: string
             - Name: modelid
               Type: string
+            - Name: identity_arn
+              Type: string
+            - Name: requestmetadata
+              Type: map<string,string>
             - Name: input
               Type: 'struct<inputbodyjson:string,inputcontenttype:string,inputtokencount:int>'
             - Name: output

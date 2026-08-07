@@ -259,16 +259,44 @@ aws glue start-job-run \
 
 ---
 
+## Processed Table Schema
+
+The ETL writes to `bedrock_logs.bedrock_invocations_processed` in Parquet format, partitioned by `account_id / year / month / day`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `schematype` | string | Always `ModelInvocationLog` |
+| `schemaversion` | string | Log schema version (e.g. `1.0`) |
+| `timestamp` | string | ISO 8601 invocation time |
+| `region` | string | AWS region where the invocation occurred |
+| `requestid` | string | Unique request ID |
+| `operation` | string | API called — `Converse`, `InvokeModel`, etc. |
+| `modelid` | string | Model ID or Application Inference Profile ARN used for the invocation |
+| `identity_arn` | string | IAM principal ARN of the caller, e.g. `arn:aws:sts::123456789012:assumed-role/my-role/session` — use this to attribute usage to a team, service, or user |
+| `requestmetadata` | map&lt;string,string&gt; | Optional key-value tags supplied by the caller via [per-request metadata](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-request-metadata.html) |
+| `input` | struct | `inputbodyjson` (string), `inputcontenttype` (string), `inputtokencount` (int) |
+| `output` | struct | `outputbodyjson` (string), `outputcontenttype` (string), `outputtokencount` (int) |
+| `account_id` | string | **Partition key** — source AWS account ID |
+| `year` | string | **Partition key** — e.g. `2026` |
+| `month` | string | **Partition key** — e.g. `08` |
+| `day` | string | **Partition key** — e.g. `07` |
+
+**Always filter on partition columns** (`account_id`, `year`, `month`, `day`) in Athena to avoid full table scans.
+
+---
+
 ## Querying Logs
 
 All queries use the `bedrock-analytics` workgroup in the central account. The main table is `bedrock_logs.bedrock_invocations_processed`.
 
 ```sql
--- Invocations by account and model
-SELECT account_id, modelid, COUNT(*) AS invocations
+-- Invocations by account, identity, and model
+SELECT account_id, identity_arn, modelid, COUNT(*) AS invocations,
+       SUM(input.inputtokencount) AS total_input_tokens,
+       SUM(output.outputtokencount) AS total_output_tokens
 FROM bedrock_logs.bedrock_invocations_processed
-WHERE year='2026' AND month='07'
-GROUP BY account_id, modelid
+WHERE year='2026' AND month='08'
+GROUP BY account_id, identity_arn, modelid
 ORDER BY invocations DESC;
 ```
 
