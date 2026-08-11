@@ -486,6 +486,58 @@ Resources:
         - Key: FinOps
           Value: bedrock-data-lake
 
+  # ---------------------------------------------------------------------------
+  # Component 8: Athena Named Query — flattened invocations view
+  # Creates a view that extracts token counts, stop reason, and prompt/response
+  # previews from the nested JSON fields for easy querying.
+  # Run this query once in the bedrock-analytics workgroup to create the view.
+  # ---------------------------------------------------------------------------
+  BedrockInvocationsView:
+    Type: AWS::Athena::NamedQuery
+    DependsOn: BedrockAthenaWorkGroup
+    Properties:
+      Database: bedrock_logs
+      WorkGroup: bedrock-analytics
+      Name: bedrock_invocations_view
+      Description: 'Flattened view of Bedrock invocation logs with token usage and prompt/response previews'
+      QueryString: !Sub |
+        CREATE OR REPLACE VIEW bedrock_logs.bedrock_invocations_view AS
+        SELECT
+          account_id,
+          timestamp,
+          region,
+          requestid,
+          operation,
+          modelid,
+          identity_arn,
+          JSON_FORMAT(CAST(requestmetadata AS JSON))                        AS requestmetadata,
+          year,
+          month,
+          day,
+          input.inputtokencount                                             AS input_token_count,
+          input.inputcontenttype                                            AS input_content_type,
+          output.outputtokencount                                           AS output_token_count,
+          output.outputcontenttype                                          AS output_content_type,
+          CAST(json_extract_scalar(output.outputbodyjson, '$.usage.inputTokens')              AS INTEGER) AS usage_input_tokens,
+          CAST(json_extract_scalar(output.outputbodyjson, '$.usage.outputTokens')             AS INTEGER) AS usage_output_tokens,
+          CAST(json_extract_scalar(output.outputbodyjson, '$.usage.totalTokens')              AS INTEGER) AS usage_total_tokens,
+          CAST(json_extract_scalar(output.outputbodyjson, '$.usage.cacheReadInputTokenCount')  AS INTEGER) AS usage_cache_read_tokens,
+          CAST(json_extract_scalar(output.outputbodyjson, '$.usage.cacheWriteInputTokenCount') AS INTEGER) AS usage_cache_write_tokens,
+          json_extract_scalar(output.outputbodyjson, '$.stopReason')       AS stop_reason,
+          COALESCE(
+            json_extract_scalar(output.outputbodyjson, '$.output.message.content[0].text'),
+            json_extract_scalar(output.outputbodyjson, '$.content[0].text'),
+            json_extract_scalar(output.outputbodyjson, '$.completion'),
+            json_extract_scalar(output.outputbodyjson, '$.outputText')
+          )                                                                 AS response_preview,
+          COALESCE(
+            json_extract_scalar(input.inputbodyjson, '$.messages[0].content[0].text'),
+            json_extract_scalar(input.inputbodyjson, '$.messages[0].content'),
+            json_extract_scalar(input.inputbodyjson, '$.prompt'),
+            json_extract_scalar(input.inputbodyjson, '$.inputText')
+          )                                                                 AS prompt_preview
+        FROM bedrock_logs.bedrock_invocations_processed
+
 Outputs:
   BedrockDataLakeBucketName:
     Description: 'Name of the central S3 data lake bucket'

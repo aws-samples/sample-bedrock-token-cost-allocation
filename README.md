@@ -255,7 +255,33 @@ aws glue start-job-run \
   --profile <central-account-profile>
 ```
 
-5. Query in Athena using the `bedrock-analytics` workgroup — see [Athena Query Reference](./Bedrock%20Data%20Lake%20SQL.md)
+5. Create the Athena view (one-time step — this executes the saved query that was deployed with the stack):
+
+```bash
+# Get the named query ID deployed by CloudFormation
+NAMED_QUERY_ID=$(aws athena list-named-queries \
+  --work-group bedrock-analytics \
+  --region us-east-1 \
+  --profile <central-account-profile> \
+  --query 'NamedQueryIds[0]' --output text)
+
+# Get the SQL and execute it to create the view
+QUERY=$(aws athena get-named-query \
+  --named-query-id $NAMED_QUERY_ID \
+  --region us-east-1 \
+  --profile <central-account-profile> \
+  --query 'NamedQuery.QueryString' --output text)
+
+aws athena start-query-execution \
+  --query-string "$QUERY" \
+  --work-group bedrock-analytics \
+  --region us-east-1 \
+  --profile <central-account-profile>
+```
+
+Once complete, `bedrock_invocations_view` will appear in the Athena console under the `bedrock_logs` database. This only needs to be run once — after that you can query the view directly.
+
+6. Query in Athena using the `bedrock-analytics` workgroup — see [Athena Query Reference](./Bedrock%20Data%20Lake%20SQL.md)
 
 ---
 
