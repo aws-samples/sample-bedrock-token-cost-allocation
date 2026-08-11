@@ -339,34 +339,37 @@ A pre-built QuickSight dashboard (`Bedrock-Invocation-Usage-Dashboard.yaml`) is 
 ### Prerequisites
 
 - Amazon QuickSight **Enterprise edition** activated in the central account
-- Athena `bedrock_invocations_view` created (Step 5 above)
-- `cid-cmd` Python tool installed
+- Athena `bedrock_invocations_view` created (Step 5 in the verification section above)
+- `cid-cmd` Python tool installed: `pip3 install --upgrade cid-cmd`
 
-The `bedrock-data-lake` stack creates a `BedrockQuickSightDataSourceRole` IAM role with the necessary S3, Athena, and Glue permissions. When `cid-cmd` prompts you to choose a QuickSight role, select this role rather than creating a new one. Get the ARN from the stack output:
+The `bedrock-data-lake` stack deploys a `BedrockQuickSightDataSourceRole` IAM role with the S3, Athena, and Glue permissions QuickSight needs. You must point the `CID-CMD-Athena` datasource at this role before deploying — do this once after the data lake stack is deployed:
 
 ```bash
-aws cloudformation describe-stacks \
-  --stack-name bedrock-data-lake \
-  --query 'Stacks[0].Outputs[?OutputKey==`QuickSightDataSourceRoleArn`].OutputValue' \
-  --output text --region us-east-1 \
+aws quicksight update-data-source \
+  --aws-account-id <central-account-id> \
+  --data-source-id CID-CMD-Athena \
+  --name CID-CMD-Athena \
+  --data-source-parameters '{"AthenaParameters":{"WorkGroup":"bedrock-analytics","RoleArn":"arn:aws:iam::<central-account-id>:role/BedrockQuickSightDataSourceRole"}}' \
+  --region us-east-1 \
   --profile <central-account-profile>
 ```
 
-### Install cid-cmd
-
-```bash
-pip3 install --upgrade cid-cmd
-```
+If `CID-CMD-Athena` doesn't exist yet (first time deploying), skip this step — `cid-cmd` will create it and prompt you to select `BedrockQuickSightDataSourceRole`.
 
 ### Deploy the dashboard
 
-Run from the repo root in the central account:
-
 ```bash
+export AWS_PROFILE=<central-account-profile>
+export AWS_REGION=us-east-1
+
 cid-cmd deploy --resources ./Bedrock-Invocation-Usage-Dashboard.yaml
 ```
 
-`cid-cmd` will prompt you to select your Athena workgroup (`bedrock-analytics`) and QuickSight datasource, then deploy the dashboard and its dataset automatically.
+When prompted:
+- **Athena database**: `bedrock_logs`
+- **Athena workgroup**: `bedrock-analytics`
+- **QuickSight datasource**: select `CID-CMD-Athena`
+- **QuickSight role** (if prompted): select `BedrockQuickSightDataSourceRole`
 
 ### Refresh dataset
 
