@@ -342,6 +342,16 @@ A pre-built QuickSight dashboard (`Bedrock-Invocation-Usage-Dashboard.yaml`) is 
 - Athena `bedrock_invocations_view` created (Step 5 above)
 - `cid-cmd` Python tool installed
 
+The `bedrock-data-lake` stack creates a `BedrockQuickSightDataSourceRole` IAM role with the necessary S3, Athena, and Glue permissions. When `cid-cmd` prompts you to choose a QuickSight role, select this role rather than creating a new one. Get the ARN from the stack output:
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name bedrock-data-lake \
+  --query 'Stacks[0].Outputs[?OutputKey==`QuickSightDataSourceRoleArn`].OutputValue' \
+  --output text --region us-east-1 \
+  --profile <central-account-profile>
+```
+
 ### Install cid-cmd
 
 ```bash

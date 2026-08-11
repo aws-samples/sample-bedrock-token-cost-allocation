@@ -24,98 +24,59 @@ datasets:
             Name: bedrock_invocations_view
             InputColumns:
             - Name: account_id
-              Id: bedrock_i-account_i-eaff2a
               Type: STRING
             - Name: payer_id
-              Id: bedrock_i-payer_id-6739d4
               Type: STRING
             - Name: timestamp
-              Id: bedrock_i-timestamp-8264d0
               Type: STRING
             - Name: region
-              Id: bedrock_i-region-ec168e
               Type: STRING
             - Name: requestid
-              Id: bedrock_i-requestid-0138c6
               Type: STRING
             - Name: operation
-              Id: bedrock_i-operation-7c330f
               Type: STRING
             - Name: modelid
-              Id: bedrock_i-modelid-5cca03
               Type: STRING
             - Name: identity_arn
-              Id: bedrock_i-identity_-a814ea
               Type: STRING
             - Name: requestmetadata
-              Id: bedrock_i-requestme-bb1281
               Type: STRING
             - Name: year
-              Id: bedrock_i-year-4806ca
               Type: STRING
             - Name: month
-              Id: bedrock_i-month-aafc6b
               Type: STRING
             - Name: day
-              Id: bedrock_i-day-0548de
               Type: STRING
             - Name: input_token_count
-              Id: bedrock_i-input_tok-e6f458
               Type: INTEGER
             - Name: input_content_type
-              Id: bedrock_i-input_con-87573a
               Type: STRING
             - Name: output_token_count
-              Id: bedrock_i-output_to-c07331
               Type: INTEGER
             - Name: output_content_type
-              Id: bedrock_i-output_co-1c2f90
               Type: STRING
             - Name: usage_input_tokens
-              Id: bedrock_i-usage_inp-170e2c
               Type: INTEGER
             - Name: usage_output_tokens
-              Id: bedrock_i-usage_out-4c47d1
               Type: INTEGER
             - Name: usage_total_tokens
-              Id: bedrock_i-usage_tot-162db6
               Type: INTEGER
             - Name: usage_cache_read_tokens
-              Id: bedrock_i-usage_cac-df837d
               Type: INTEGER
             - Name: usage_cache_write_tokens
-              Id: bedrock_i-usage_cac-a85c80
               Type: INTEGER
             - Name: stop_reason
-              Id: bedrock_i-stop_reas-76cf1a
               Type: STRING
             - Name: response_preview
-              Id: bedrock_i-response_-db09d2
               Type: STRING
             - Name: prompt_preview
-              Id: bedrock_i-prompt_pr-e8fcda
               Type: STRING
       ImportMode: SPICE
-      DataPrepConfiguration:
-        SourceTableMap:
-          3908a1f9-85bf-4c60-b078-9ada9d2144fe:
+      LogicalTableMap:
+        bedrock-invocations-view-logical:
+          Alias: bedrock_invocations_view
+          Source:
             PhysicalTableId: 3e16549b-84ef-49f9-923f-74eee799fb1b
-        TransformStepMap:
-          d89d9381-f10c-43c3-a343-d3d0b0d837e8:
-            ImportTableStep:
-              Alias: bedrock_invocations_view
-              Source:
-                SourceTableId: 3908a1f9-85bf-4c60-b078-9ada9d2144fe
-        DestinationTableMap:
-          23485f7f-1560-4275-92ea-7cb15b30d9ba:
-            Alias: Destination Table 1
-            Source:
-              TransformOperationId: d89d9381-f10c-43c3-a343-d3d0b0d837e8
-      SemanticModelConfiguration:
-        TableMap:
-          840618aa-cbdb-4df1-b6b2-a58212e621c4:
-            Alias: Semantic Table 1
-            DestinationTableId: 23485f7f-1560-4275-92ea-7cb15b30d9ba
     dependsOn:
       views:
       - bedrock_invocations_view

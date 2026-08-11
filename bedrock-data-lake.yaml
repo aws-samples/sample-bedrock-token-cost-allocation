@@ -492,6 +492,79 @@ Resources:
           Value: bedrock-data-lake
 
   # ---------------------------------------------------------------------------
+  # Component 9: QuickSight IAM Role
+  # Grants QuickSight (cid-cmd) read access to the data lake and Athena results
+  # buckets so the bedrock_invocations_view dataset can be created and refreshed.
+  # Pass this role ARN when cid-cmd prompts for a QuickSight role.
+  # ---------------------------------------------------------------------------
+  QuickSightDataSourceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: BedrockQuickSightDataSourceRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: quicksight.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref AWS::AccountId
+      Policies:
+        - PolicyName: BedrockQuickSightS3AthenaAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DataLakeBucketRead
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt BedrockDataLakeBucket.Arn
+                  - !Sub '${BedrockDataLakeBucket.Arn}/*'
+              - Sid: AthenaResultsBucketReadWrite
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt BedrockAthenaResultsBucket.Arn
+                  - !Sub '${BedrockAthenaResultsBucket.Arn}/*'
+              - Sid: AthenaAccess
+                Effect: Allow
+                Action:
+                  - athena:BatchGetQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:GetQueryResultsStream
+                  - athena:ListQueryExecutions
+                  - athena:StartQueryExecution
+                  - athena:StopQueryExecution
+                  - athena:GetWorkGroup
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/bedrock-analytics'
+              - Sid: GlueRead
+                Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetDatabases
+                  - glue:GetTable
+                  - glue:GetTables
+                  - glue:GetPartition
+                  - glue:GetPartitions
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/bedrock_logs'
+                  - !Sub 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/bedrock_logs/*'
+      Tags:
+        - Key: FinOps
+          Value: bedrock-data-lake
+
+  # ---------------------------------------------------------------------------
   # Component 8: Athena Named Query — flattened invocations view
   # Creates a view that extracts token counts, stop reason, and prompt/response
   # previews from the nested JSON fields for easy querying.
@@ -574,3 +647,9 @@ Outputs:
     Value: !Ref BedrockAthenaWorkGroup
     Export:
       Name: !Sub '${AWS::StackName}-AthenaWorkGroupName'
+
+  QuickSightDataSourceRoleArn:
+    Description: 'ARN of the IAM role for QuickSight/cid-cmd to access the data lake and Athena'
+    Value: !GetAtt QuickSightDataSourceRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-QuickSightDataSourceRoleArn'
