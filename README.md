@@ -332,7 +332,51 @@ For the full query reference including the CUR cost join, see [Bedrock Data Lake
 
 ---
 
-## Known Issues & Gotchas
+## QuickSight Dashboard
+
+A pre-built QuickSight dashboard (`Bedrock-Invocation-Usage-Dashboard.yaml`) is included in this repo. It visualises Bedrock invocation counts, token usage, and model breakdown using the `bedrock_invocations_view` Athena view as its dataset.
+
+### Prerequisites
+
+- Amazon QuickSight **Enterprise edition** activated in the central account
+- Athena `bedrock_invocations_view` created (Step 5 above)
+- `cid-cmd` Python tool installed
+
+### Install cid-cmd
+
+```bash
+pip3 install --upgrade cid-cmd
+```
+
+### Deploy the dashboard
+
+Run from the repo root in the central account:
+
+```bash
+cid-cmd deploy --resources ./Bedrock-Invocation-Usage-Dashboard.yaml
+```
+
+`cid-cmd` will prompt you to select your Athena workgroup (`bedrock-analytics`) and QuickSight datasource, then deploy the dashboard and its dataset automatically.
+
+### Refresh dataset
+
+After new data is processed by the Glue ETL job, refresh the QuickSight SPICE dataset:
+
+```bash
+cid-cmd refresh --dashboard-id bedrock-invocation-usage-dashboard
+```
+
+### Update or delete
+
+```bash
+# Update dashboard and datasets
+cid-cmd update --force --recursive
+
+# Remove dashboard and all dependencies
+cid-cmd delete --dashboard-id bedrock-invocation-usage-dashboard
+```
+
+---
 
 **CloudFormation ResourceExistenceCheck on bucket policies**  
 CloudFormation's early validation hook rejects bucket policies where referenced IAM principal ARNs don't yet exist. This is why the central account stack is deployed without the bucket policy first — deploy linked account stacks first, then apply the bucket policy via CLI (Step 4).

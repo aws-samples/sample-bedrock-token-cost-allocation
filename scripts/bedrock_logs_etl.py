@@ -1,13 +1,14 @@
 """
 Bedrock Logs ETL Job
 Reads raw Bedrock invocation log JSON.GZ files from the data lake bucket,
-parses them, and writes Parquet files partitioned by account_id/year/month/day
+parses them, and writes Parquet files partitioned by payer_id/account_id/year/month/day
 to the processed/ prefix for fast Athena queries.
+
+payer_id is stamped as a static column from the PAYER_ACCOUNT_ID job argument
+(the central/org account ID where the data lake lives).
 """
 
 import sys
-import json
-import gzip
 from awsglue.transforms import *
 from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
@@ -18,7 +19,7 @@ from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType, MapType
 )
 
-args = getResolvedOptions(sys.argv, ['JOB_NAME', 'SOURCE_BUCKET', 'PROCESSED_PREFIX'])
+args = getResolvedOptions(sys.argv, ['JOB_NAME', 'SOURCE_BUCKET', 'PROCESSED_PREFIX', 'PAYER_ACCOUNT_ID'])
 
 sc = SparkContext()
 glueContext = GlueContext(sc)
@@ -28,6 +29,7 @@ job.init(args['JOB_NAME'], args)
 
 SOURCE_BUCKET = args['SOURCE_BUCKET']
 PROCESSED_PREFIX = args['PROCESSED_PREFIX']
+PAYER_ACCOUNT_ID = args['PAYER_ACCOUNT_ID']
 SOURCE_PATH = f's3://{SOURCE_BUCKET}/'
 OUTPUT_PATH = f's3://{SOURCE_BUCKET}/{PROCESSED_PREFIX}/'
 
@@ -65,28 +67,28 @@ df = spark.read \
     .schema(LOG_SCHEMA) \
     .json(raw_path)
 
-# Add partition columns derived from timestamp and accountId
-# identity_arn is extracted from the nested identity struct for easy querying
+# Add partition columns and flatten nested fields.
+# payer_id is stamped from the job argument — same value for all rows in this run.
+# identity_arn is extracted from the nested identity struct for easy querying.
 df_processed = df \
+    .withColumn('payer_id', F.lit(PAYER_ACCOUNT_ID)) \
     .withColumn('account_id', F.col('accountId')) \
     .withColumn('identity_arn', F.col('identity.arn')) \
     .withColumn('year',  F.date_format(F.to_timestamp(F.col('timestamp')), 'yyyy')) \
     .withColumn('month', F.date_format(F.to_timestamp(F.col('timestamp')), 'MM')) \
     .withColumn('day',   F.date_format(F.to_timestamp(F.col('timestamp')), 'dd')) \
-    .withColumnRenamed('schemaType',    'schematype') \
-    .withColumnRenamed('schemaVersion', 'schemaversion') \
-    .withColumnRenamed('requestId',     'requestid') \
-    .withColumnRenamed('operation',     'operation') \
-    .withColumnRenamed('modelId',       'modelid') \
-    .withColumnRenamed('region',        'region') \
+    .withColumnRenamed('schemaType',      'schematype') \
+    .withColumnRenamed('schemaVersion',   'schemaversion') \
+    .withColumnRenamed('requestId',       'requestid') \
+    .withColumnRenamed('modelId',         'modelid') \
     .withColumnRenamed('requestMetadata', 'requestmetadata') \
     .drop('identity') \
     .drop('accountId')
 
-# Write Parquet partitioned by account_id/year/month/day
+# Write Parquet partitioned by payer_id/account_id/year/month/day
 df_processed.write \
     .mode('overwrite') \
-    .partitionBy('account_id', 'year', 'month', 'day') \
+    .partitionBy('payer_id', 'account_id', 'year', 'month', 'day') \
     .parquet(OUTPUT_PATH)
 
 # Register new partitions in Glue catalog — replaces need for crawler

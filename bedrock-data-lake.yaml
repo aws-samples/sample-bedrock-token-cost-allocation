@@ -224,7 +224,7 @@ Resources:
           from pyspark.sql import functions as F
           from pyspark.sql.types import StructType, StructField, StringType, IntegerType, MapType
 
-          args = getResolvedOptions(sys.argv, ['JOB_NAME', 'SOURCE_BUCKET', 'PROCESSED_PREFIX'])
+          args = getResolvedOptions(sys.argv, ['JOB_NAME', 'SOURCE_BUCKET', 'PROCESSED_PREFIX', 'PAYER_ACCOUNT_ID'])
           sc = SparkContext()
           glueContext = GlueContext(sc)
           spark = glueContext.spark_session
@@ -233,6 +233,7 @@ Resources:
 
           SOURCE_BUCKET = args['SOURCE_BUCKET']
           PROCESSED_PREFIX = args['PROCESSED_PREFIX']
+          PAYER_ACCOUNT_ID = args['PAYER_ACCOUNT_ID']
           SOURCE_PATH = f's3://{SOURCE_BUCKET}/'
           OUTPUT_PATH = f's3://{SOURCE_BUCKET}/{PROCESSED_PREFIX}/'
 
@@ -266,6 +267,7 @@ Resources:
 
           df_processed = df \
               .withColumn('account_id', F.col('accountId')) \
+              .withColumn('payer_id', F.lit(PAYER_ACCOUNT_ID)) \
               .withColumn('identity_arn', F.col('identity.arn')) \
               .withColumn('year',  F.date_format(F.to_timestamp(F.col('timestamp')), 'yyyy')) \
               .withColumn('month', F.date_format(F.to_timestamp(F.col('timestamp')), 'MM')) \
@@ -280,7 +282,7 @@ Resources:
 
           df_processed.write \
               .mode('overwrite') \
-              .partitionBy('account_id', 'year', 'month', 'day') \
+              .partitionBy('payer_id', 'account_id', 'year', 'month', 'day') \
               .parquet(OUTPUT_PATH)
 
           # Register new partitions in Glue catalog — replaces need for crawler
@@ -318,7 +320,7 @@ Resources:
       ServiceToken: !GetAtt GlueScriptUploaderFunction.Arn
       Bucket: !Sub 'bedrock-data-lake-${AWS::AccountId}'
       Key: glue-scripts/bedrock_logs_etl.py
-      Version: '3'
+      Version: '4'
 
   # ---------------------------------------------------------------------------
   # Component 6: Glue ETL Job — converts raw JSON.GZ to partitioned Parquet
@@ -388,6 +390,7 @@ Resources:
         '--job-language': 'python'
         '--SOURCE_BUCKET': !Sub 'bedrock-data-lake-${AWS::AccountId}'
         '--PROCESSED_PREFIX': 'processed'
+        '--PAYER_ACCOUNT_ID': !Ref AWS::AccountId
         '--job-bookmark-option': 'job-bookmark-enable'
         '--enable-continuous-cloudwatch-log': 'true'
         '--enable-glue-datacatalog': 'true'
@@ -423,6 +426,8 @@ Resources:
         Name: bedrock_invocations_processed
         TableType: EXTERNAL_TABLE
         PartitionKeys:
+          - Name: payer_id
+            Type: string
           - Name: account_id
             Type: string
           - Name: year
@@ -503,6 +508,7 @@ Resources:
       QueryString: !Sub |
         CREATE OR REPLACE VIEW bedrock_logs.bedrock_invocations_view AS
         SELECT
+          payer_id,
           account_id,
           timestamp,
           region,
