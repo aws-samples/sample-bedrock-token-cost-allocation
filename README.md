@@ -1,6 +1,6 @@
 # Bedrock Token Cost Allocation
 
-This sample shows how to attribute Amazon Bedrock token costs back to individual teams, projects, or business units using **Application Inference Profiles** and a centralized data lake.
+This sample shows how to attribute Amazon Bedrock token costs back to individual teams, projects, or business units using **Amazon Bedrock Invocation Logs** and a centralized data lake.
 
 **What it does:**
 
