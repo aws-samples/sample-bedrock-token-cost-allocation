@@ -1,7 +1,83 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: 'Bedrock Logging Data Lake - Central account resources for aggregating Bedrock invocation logs'
 
+Parameters:
+  LinkedAccountReplicationRoleArns:
+    Type: CommaDelimitedList
+    Description: 'Comma-separated list of replication role ARNs from linked accounts (e.g. arn:aws:iam::123456789012:role/bedrock-s3-replication-role). Required to grant these roles KMS encrypt/decrypt for cross-account S3 replication.'
+    Default: ''
+
 Resources:
+  # ---------------------------------------------------------------------------
+  # KMS Customer Managed Key for data lake bucket encryption
+  # Used by BedrockDataLakeBucket, BedrockAthenaResultsBucket, and the access
+  # logs bucket. The key policy grants access to the account root, Glue ETL
+  # role, QuickSight data source role, and S3 replication (via the key policy
+  # grants below — the replication role in each linked account must also be
+  # granted kms:GenerateDataKey via this key after linked account stacks deploy).
+  # ---------------------------------------------------------------------------
+  DataLakeKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: 'CMK for Bedrock data lake S3 buckets'
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowAccountRoot
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowGlueEtl
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:role/bedrock-glue-etl-role'
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: '*'
+          - Sid: AllowQuickSight
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:role/BedrockQuickSightDataSourceRole'
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: '*'
+          - Sid: AllowS3ServiceForReplication
+            Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'kms:CallerAccount': !Ref AWS::AccountId
+          - Sid: AllowLinkedAccountReplication
+            Effect: Allow
+            Principal:
+              AWS: !Ref LinkedAccountReplicationRoleArns
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: '*'
+      Tags:
+        - Key: FinOps
+          Value: bedrock-data-lake
+
+  DataLakeKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/bedrock-data-lake-key
+      TargetKeyId: !Ref DataLakeKmsKey
+
   # ---------------------------------------------------------------------------
   # S3 Access Logging Bucket
   # Stores server access logs for BedrockDataLakeBucket and BedrockAthenaResultsBucket
@@ -68,7 +144,9 @@ Resources:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref DataLakeKmsKey
+            BucketKeyEnabled: true
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -109,7 +187,9 @@ Resources:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref DataLakeKmsKey
+            BucketKeyEnabled: true
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -362,6 +442,12 @@ Resources:
                   - !Sub '${BedrockDataLakeBucket.Arn}/*'
               - Effect: Allow
                 Action:
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: !GetAtt DataLakeKmsKey.Arn
+              - Effect: Allow
+                Action:
                   - glue:GetTable
                   - glue:GetPartitions
                   - glue:BatchCreatePartition
@@ -534,6 +620,13 @@ Resources:
                 Resource:
                   - !GetAtt BedrockAthenaResultsBucket.Arn
                   - !Sub '${BedrockAthenaResultsBucket.Arn}/*'
+              - Sid: DataLakeKmsAccess
+                Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: !GetAtt DataLakeKmsKey.Arn
               - Sid: AthenaAccess
                 Effect: Allow
                 Action:
@@ -653,3 +746,15 @@ Outputs:
     Value: !GetAtt QuickSightDataSourceRole.Arn
     Export:
       Name: !Sub '${AWS::StackName}-QuickSightDataSourceRoleArn'
+
+  DataLakeKmsKeyArn:
+    Description: 'ARN of the CMK used to encrypt data lake S3 buckets'
+    Value: !GetAtt DataLakeKmsKey.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DataLakeKmsKeyArn'
+
+  DataLakeKmsKeyAlias:
+    Description: 'Alias of the CMK used to encrypt data lake S3 buckets'
+    Value: !Ref DataLakeKmsKeyAlias
+    Export:
+      Name: !Sub '${AWS::StackName}-DataLakeKmsKeyAlias'
