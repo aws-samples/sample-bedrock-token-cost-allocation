@@ -540,22 +540,70 @@ aws bedrock put-model-invocation-logging-configuration \
   --profile <source-account-profile>
 ```
 
-#### Step 5 — Query in Athena (~60 seconds after first invocation)
+#### Step 5 — Create the Athena view (one-time step)
+
+The central stack deploys a `bedrock_invocations_view` saved query that flattens nested JSON fields from `input` and `output` structs. Run this once to create the view:
+
+```bash
+# Get the named query ID deployed by CloudFormation
+NAMED_QUERY_ID=$(aws athena list-named-queries \
+  --work-group bedrock-analytics \
+  --region us-east-1 \
+  --profile <central-account-profile> \
+  --query 'NamedQueryIds[0]' --output text)
+
+# Get the SQL and execute it to create the view
+QUERY=$(aws athena get-named-query \
+  --named-query-id $NAMED_QUERY_ID \
+  --region us-east-1 \
+  --profile <central-account-profile> \
+  --query 'NamedQuery.QueryString' --output text)
+
+aws athena start-query-execution \
+  --query-string "$QUERY" \
+  --work-group bedrock-analytics \
+  --region us-east-1 \
+  --profile <central-account-profile>
+```
+
+After this completes, `bedrock_invocations_view` will appear in the Athena console under the `bedrock_logs` database.
+
+#### Step 6 — Query in Athena (~60 seconds after first invocation)
+
+Query the raw table:
 
 ```sql
-SELECT account_id, modelid, COUNT(*) AS invocations,
+SELECT accountid, modelid, COUNT(*) AS invocations,
        SUM(input.inputtokencount) AS total_input_tokens,
        SUM(output.outputtokencount) AS total_output_tokens
 FROM bedrock_logs.bedrock_invocations
-WHERE account_id = '<source-account-id>'
-  AND region = 'us-east-1'
-  AND year = '2025'
-  AND month = '07'
-GROUP BY account_id, modelid
+WHERE year = '2026'
+  AND month = '08'
+GROUP BY accountid, modelid
 ORDER BY invocations DESC;
 ```
 
-Use the `bedrock-analytics` workgroup. Always include `account_id` and `region` filters — they are required by Partition Projection.
+Or use the flattened view to access extracted token counts, stop reason, and prompt/response previews:
+
+```sql
+SELECT accountid, modelid, identity,
+       SUM(usage_input_tokens) AS total_input,
+       SUM(usage_output_tokens) AS total_output,
+       COUNT(*) AS invocations
+FROM bedrock_logs.bedrock_invocations_view
+WHERE year = '2026'
+  AND month = '08'
+GROUP BY accountid, modelid, identity
+ORDER BY invocations DESC;
+```
+
+Use the `bedrock-analytics` workgroup. The view extracts:
+- `usage_input_tokens`, `usage_output_tokens`, `usage_total_tokens` — token counts from `output.outputbodyjson` usage fields
+- `usage_cache_read_tokens`, `usage_cache_write_tokens` — cache prompt tokens (Amazon Nova models)
+- `stop_reason` — why the model stopped generating (e.g. `end_turn`, `max_tokens`)
+- `prompt_preview`, `response_preview` — first content element from input/output body JSON
+
+The raw table uses date-only partitions (`year`, `month`, `day`) with no mandatory WHERE clause constraints, so you can query across all accounts and regions freely.
 
 ---
 

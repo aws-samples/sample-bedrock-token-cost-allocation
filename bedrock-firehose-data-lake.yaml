@@ -467,6 +467,59 @@ Resources:
           Value: bedrock-firehose-data-lake
 
   # ---------------------------------------------------------------------------
+  # Athena Named Query: flattened view of bedrock_invocations table
+  # Extracts nested JSON fields from input/output structs and parses usage tokens.
+  # ---------------------------------------------------------------------------
+  BedrockInvocationsView:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Name: bedrock_invocations_view
+      Database: !Ref BedrockLogsGlueDatabase
+      WorkGroup: !Ref BedrockAthenaWorkGroup
+      Description: 'Flattened view of bedrock_invocations with extracted usage token counts and stop reason'
+      QueryString: |
+        CREATE OR REPLACE VIEW "bedrock_invocations_view" AS
+        SELECT
+          accountid,
+          CAST(from_iso8601_timestamp(timestamp) AS timestamp) AS timestamp,
+          region,
+          requestid,
+          operation,
+          modelid,
+          identity_arn,
+          IF((identity_arn LIKE '%:assumed-role/%'), element_at(split(identity_arn, '/'), -1), identity_arn) AS identity,
+          JSON_FORMAT(CAST(requestmetadata AS JSON)) AS requestmetadata,
+          year,
+          month,
+          day,
+          input.inputtokencount AS input_token_count,
+          input.inputcontenttype AS input_content_type,
+          output.outputtokencount AS output_token_count,
+          output.outputcontenttype AS output_content_type,
+          CAST(json_extract_scalar(output.outputbodyjson, '$.usage.inputtokens') AS INTEGER) AS usage_input_tokens,
+          CAST(json_extract_scalar(output.outputbodyjson, '$.usage.outputtokens') AS INTEGER) AS usage_output_tokens,
+          CAST(json_extract_scalar(output.outputbodyjson, '$.usage.totaltokens') AS INTEGER) AS usage_total_tokens,
+          CAST(json_extract_scalar(output.outputbodyjson, '$.usage.cachereadinputtokencount') AS INTEGER) AS usage_cache_read_tokens,
+          CAST(json_extract_scalar(output.outputbodyjson, '$.usage.cachewriteinputtokencount') AS INTEGER) AS usage_cache_write_tokens,
+          json_extract_scalar(output.outputbodyjson, '$.stopreason') AS stop_reason,
+          COALESCE(
+            json_extract_scalar(output.outputbodyjson, '$.output.message.content[0].text'),
+            json_extract_scalar(output.outputbodyjson, '$.content[0].text'),
+            json_extract_scalar(output.outputbodyjson, '$.completion'),
+            json_extract_scalar(output.outputbodyjson, '$.outputtext')
+          ) AS response_preview,
+          COALESCE(
+            json_extract_scalar(input.inputbodyjson, '$.messages[0].content[0].text'),
+            json_extract_scalar(input.inputbodyjson, '$.messages[0].content'),
+            json_extract_scalar(input.inputbodyjson, '$.prompt'),
+            json_extract_scalar(input.inputbodyjson, '$.inputtext')
+          ) AS prompt_preview
+        FROM
+          "bedrock_logs"."bedrock_invocations"
+        WHERE
+          (from_iso8601_timestamp(timestamp) >= date_add('month', -6, current_timestamp))
+
+  # ---------------------------------------------------------------------------
   # CloudWatch Log Group for Firehose delivery error logging
   # Satisfies: Requirements 13.1
   # ---------------------------------------------------------------------------
