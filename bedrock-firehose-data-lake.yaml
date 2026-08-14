@@ -1,0 +1,756 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Bedrock Firehose Data Lake - Central account resources: Firehose delivery stream with inline JSON-to-Parquet conversion, S3 data lake bucket, Glue schema table with partition projection, Athena workgroup, and cross-account IAM roles'
+
+Parameters:
+  SourceAccountIds:
+    Type: CommaDelimitedList
+    Description: 'Comma-delimited list of source AWS account IDs (1–10) whose CWLDeliveryRoles are permitted to assume the CrossAccountFirehoseRole in this central account.'
+
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # KMS Customer Managed Key for Firehose data lake bucket encryption
+  # Satisfies: Requirements 1.1, 1.9, 3.4
+  # ---------------------------------------------------------------------------
+  DataLakeKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: 'CMK for Bedrock Firehose data lake S3 bucket'
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowAccountRoot
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowFirehose
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref AWS::AccountId
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  DataLakeKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/bedrock-firehose-data-lake-key
+      TargetKeyId: !Ref DataLakeKmsKey
+
+  # ---------------------------------------------------------------------------
+  # S3 Bucket for Firehose Parquet delivery
+  # Satisfies: Requirements 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8
+  # ---------------------------------------------------------------------------
+  FirehoseDataLakeBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'bedrock-firehose-lake-${AWS::AccountId}'
+      # No VersioningConfiguration — Firehose writes new objects; versioning not required (Req 1.6)
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref DataLakeKmsKey
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DataTierTransition
+            Status: Enabled
+            Prefix: data/
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: STANDARD_IA
+              - TransitionInDays: 365
+                StorageClass: GLACIER
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  FirehoseDataLakeBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FirehoseDataLakeBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt FirehoseDataLakeBucket.Arn
+              - !Sub '${FirehoseDataLakeBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+          - Sid: AllowFirehoseWrite
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt FirehoseRole.Arn
+            Action: 's3:PutObject'
+            Resource: !Sub '${FirehoseDataLakeBucket.Arn}/data/*'
+
+  # ---------------------------------------------------------------------------
+  # KMS Customer Managed Key for Athena query results bucket encryption
+  # Satisfies: Requirements 6.7
+  # ---------------------------------------------------------------------------
+  AthenaResultsKmsKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: 'CMK for Bedrock Athena query results bucket'
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowAccountRoot
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowAthena
+            Effect: Allow
+            Principal:
+              Service: athena.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref AWS::AccountId
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  AthenaResultsKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/bedrock-athena-results-key
+      TargetKeyId: !Ref AthenaResultsKmsKey
+
+  # ---------------------------------------------------------------------------
+  # S3 bucket for Athena query results
+  # Satisfies: Requirements 6.7
+  # ---------------------------------------------------------------------------
+  BedrockAthenaResultsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'bedrock-athena-results-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref AthenaResultsKmsKey
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireQueryResults
+            Status: Enabled
+            ExpirationInDays: 30
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  # ---------------------------------------------------------------------------
+  # Bucket policy: deny non-HTTPS access to Athena results bucket
+  # Satisfies: Requirements 6.8
+  # ---------------------------------------------------------------------------
+  BedrockAthenaResultsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BedrockAthenaResultsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt BedrockAthenaResultsBucket.Arn
+              - !Sub '${BedrockAthenaResultsBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
+  # ---------------------------------------------------------------------------
+  # Cross-Account Firehose IAM Role
+  # Source account CWLDeliveryRoles assume this to call firehose:PutRecord.
+  # Satisfies: Requirements 4.1, 4.2, 4.3, 4.4, 4.5
+  # ---------------------------------------------------------------------------
+  CrossAccountFirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: bedrock-cross-account-firehose-role
+      # Wildcard principal + StringLike on aws:PrincipalArn is required because
+      # CloudFormation CommaDelimitedList cannot construct per-element IAM ARNs
+      # via !Sub in a Principal block. This scopes trust to any account's
+      # bedrock-cwl-delivery-role specifically — no other role matches.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action: sts:AssumeRole
+            Condition:
+              StringLike:
+                aws:PrincipalArn: 'arn:aws:iam::*:role/bedrock-cwl-delivery-role'
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  CrossAccountFirehoseRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: bedrock-cross-account-firehose-policy
+      Roles:
+        - !Ref CrossAccountFirehoseRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: FirehosePutOnly
+            Effect: Allow
+            Action:
+              - firehose:PutRecord
+              - firehose:PutRecordBatch
+            Resource: !Sub 'arn:aws:firehose:${AWS::Region}:${AWS::AccountId}:deliverystream/bedrock-invocations-v2'
+
+  # ---------------------------------------------------------------------------
+  # IAM Role for Firehose delivery stream
+  # Satisfies: Requirements 3.1
+  # ---------------------------------------------------------------------------
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: bedrock-firehose-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref AWS::AccountId
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  # ---------------------------------------------------------------------------
+  # Least-privilege managed policy attached to FirehoseRole
+  # Satisfies: Requirements 3.2, 3.3, 3.4, 3.5, 3.6
+  # ---------------------------------------------------------------------------
+  FirehoseRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: bedrock-firehose-role-policy
+      Roles:
+        - !Ref FirehoseRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: S3Write
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketLocation
+              - s3:ListBucket
+            Resource:
+              - !GetAtt FirehoseDataLakeBucket.Arn
+              - !Sub '${FirehoseDataLakeBucket.Arn}/*'
+          - Sid: GlueSchemaRead
+            Effect: Allow
+            Action:
+              - glue:GetTable
+              - glue:GetTableVersion
+              - glue:GetTableVersions
+              - glue:GetDatabase
+            Resource:
+              - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+              - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/bedrock_logs'
+              - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/bedrock_logs/bedrock_invocations'
+          - Sid: KmsAccess
+            Effect: Allow
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: !GetAtt DataLakeKmsKey.Arn
+          - Sid: CWLErrors
+            Effect: Allow
+            Action:
+              - logs:PutLogEvents
+              - logs:CreateLogStream
+            Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/bedrock-invocations:*'
+
+  # ---------------------------------------------------------------------------
+  # Glue Database and Table for Firehose Parquet schema + Athena Partition Projection
+  # Satisfies: Requirements 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9
+  # ---------------------------------------------------------------------------
+  BedrockLogsGlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: bedrock_logs
+        Description: 'Bedrock model invocation logs from all source accounts (Firehose Parquet pipeline)'
+
+  BedrockLogsGlueTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref BedrockLogsGlueDatabase
+      TableInput:
+        Name: bedrock_invocations
+        TableType: EXTERNAL_TABLE
+        PartitionKeys:
+          - Name: year
+            Type: string
+          - Name: month
+            Type: string
+          - Name: day
+            Type: string
+        StorageDescriptor:
+          Location: !Sub 's3://bedrock-firehose-lake-${AWS::AccountId}/data/'
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Columns:
+            - Name: schematype
+              Type: string
+            - Name: schemaversion
+              Type: string
+            - Name: timestamp
+              Type: string
+            - Name: accountid
+              Type: string
+            - Name: region
+              Type: string
+            - Name: requestid
+              Type: string
+            - Name: operation
+              Type: string
+            - Name: modelid
+              Type: string
+            - Name: identity_arn
+              Type: string
+            - Name: requestmetadata
+              Type: map<string,string>
+            - Name: input
+              Type: 'struct<inputbodyjson:string,inputcontenttype:string,inputtokencount:int>'
+            - Name: output
+              Type: 'struct<outputbodyjson:string,outputcontenttype:string,outputtokencount:int>'
+        Parameters:
+          # Date-only partition projection — fully scannable, no WHERE clause required.
+          # accountid and region are regular data columns inside the Parquet files.
+          projection.enabled: 'true'
+          projection.year.type: integer
+          projection.year.range: '2020,2030'
+          projection.year.digits: '4'
+          projection.month.type: integer
+          projection.month.range: '01,12'
+          projection.month.digits: '2'
+          projection.day.type: integer
+          projection.day.range: '01,31'
+          projection.day.digits: '2'
+          storage.location.template: !Join
+            - ''
+            - - 's3://bedrock-firehose-lake-'
+              - !Ref AWS::AccountId
+              - '/data/year=${year}/month=${month}/day=${day}'
+
+  # ---------------------------------------------------------------------------
+  # SNS Topic and CloudWatch Alarms for Firehose observability
+  # Satisfies: Requirements 13.3, 13.5
+  # ---------------------------------------------------------------------------
+  FirehoseAlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: bedrock-firehose-alarms
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  FirehoseDataFreshnessAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: bedrock-firehose-data-freshness
+      AlarmDescription: 'Firehose data freshness > 5 minutes — records may be stuck in buffer'
+      Namespace: AWS/Firehose
+      MetricName: DeliveryToS3.DataFreshness
+      Dimensions:
+        - Name: DeliveryStreamName
+          Value: !Ref FirehoseDeliveryStream
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 300
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref FirehoseAlarmTopic
+      TreatMissingData: notBreaching
+
+  FirehoseDeliverySuccessAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: bedrock-firehose-delivery-success
+      AlarmDescription: 'Firehose S3 delivery success rate < 95% for 2 consecutive periods'
+      Namespace: AWS/Firehose
+      MetricName: DeliveryToS3.Success
+      Dimensions:
+        - Name: DeliveryStreamName
+          Value: !Ref FirehoseDeliveryStream
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 0.95
+      ComparisonOperator: LessThanThreshold
+      AlarmActions:
+        - !Ref FirehoseAlarmTopic
+      TreatMissingData: notBreaching
+
+  # ---------------------------------------------------------------------------
+  # Athena WorkGroup for querying the Firehose data lake
+  # Satisfies: Requirements 6.1, 6.2, 6.3, 6.4, 6.5, 6.6
+  # ---------------------------------------------------------------------------
+  BedrockAthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: bedrock-analytics
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://bedrock-athena-results-${AWS::AccountId}/results/'
+          EncryptionConfiguration:
+            EncryptionOption: SSE_S3
+        EnforceWorkGroupConfiguration: true      # callers cannot override output location (Req 6.2)
+        PublishCloudWatchMetricsEnabled: true     # Req 6.6
+        BytesScannedCutoffPerQuery: 10737418240  # 10 GiB limit; query cancelled if exceeded (Req 6.4, 6.5)
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  # ---------------------------------------------------------------------------
+  # CloudWatch Log Group for Firehose delivery error logging
+  # Satisfies: Requirements 13.1
+  # ---------------------------------------------------------------------------
+  FirehoseLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: /aws/kinesisfirehose/bedrock-invocations
+      RetentionInDays: 30
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  # ---------------------------------------------------------------------------
+  # Lambda function: unpacks CloudWatch Logs gzip+base64 envelope
+  # CWL subscription filters deliver records as base64(gzip(JSON)) — Firehose
+  # can't run JQ on that directly. This Lambda decodes each CWL record,
+  # extracts the individual log events, and returns them as plain JSON lines.
+  # ---------------------------------------------------------------------------
+  CWLUnpackLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: bedrock-cwl-unpack-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  CWLUnpackFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: bedrock-cwl-unpack
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CWLUnpackLambdaRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          import base64, gzip, json
+
+          def handler(event, context):
+              output = []
+              for record in event['records']:
+                  # Decode the CWL envelope (base64 -> gzip -> JSON)
+                  compressed = base64.b64decode(record['data'])
+                  try:
+                      payload = json.loads(gzip.decompress(compressed).decode('utf-8'))
+                  except Exception:
+                      # Not a CWL envelope — pass through as-is
+                      output.append({'recordId': record['recordId'],
+                                     'result': 'Ok',
+                                     'data': record['data']})
+                      continue
+
+                  # messageType CONTROL_MESSAGE: skip (heartbeat)
+                  if payload.get('messageType') == 'CONTROL_MESSAGE':
+                      output.append({'recordId': record['recordId'],
+                                     'result': 'Dropped',
+                                     'data': record['data']})
+                      continue
+
+                  # Extract individual log events from the CWL batch
+                  lines = []
+                  for evt in payload.get('logEvents', []):
+                      msg = evt.get('message', '')
+                      # Bedrock log messages are JSON strings
+                      try:
+                          parsed = json.loads(msg)
+                          lines.append(json.dumps(parsed))
+                      except Exception:
+                          lines.append(msg)
+
+                  if not lines:
+                      output.append({'recordId': record['recordId'],
+                                     'result': 'Dropped',
+                                     'data': record['data']})
+                      continue
+
+                  # Firehose expects one record per invocation — join with newlines
+                  combined = '\n'.join(lines) + '\n'
+                  output.append({'recordId': record['recordId'],
+                                 'result': 'Ok',
+                                 'data': base64.b64encode(combined.encode('utf-8')).decode('utf-8')})
+              return {'records': output}
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  CWLUnpackFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt CWLUnpackFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: firehose.amazonaws.com
+      SourceArn: !Sub 'arn:aws:firehose:${AWS::Region}:${AWS::AccountId}:deliverystream/bedrock-invocations-v2'
+      SourceAccount: !Ref AWS::AccountId
+
+  # Also grant FirehoseRole permission to invoke the Lambda
+  FirehoseLambdaInvokePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: bedrock-firehose-lambda-invoke
+      Roles:
+        - !Ref FirehoseRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource: !GetAtt CWLUnpackFunction.Arn
+
+  # ---------------------------------------------------------------------------
+  # Kinesis Data Firehose Delivery Stream
+  # DirectPut type, inline JSON->Parquet conversion, dynamic partitioning
+  # Lambda processor unpacks CWL gzip envelopes before JQ extraction.
+  # Satisfies: Requirements 2.1-2.11, 12.6, 13.1
+  # ---------------------------------------------------------------------------
+  FirehoseDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    DependsOn:
+      - BedrockLogsGlueTable
+      - FirehoseRolePolicy
+      - FirehoseLambdaInvokePolicy
+      - CWLUnpackFunctionPermission
+    Properties:
+      DeliveryStreamName: bedrock-invocations-v2
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        RoleARN: !GetAtt FirehoseRole.Arn
+        BucketARN: !GetAtt FirehoseDataLakeBucket.Arn
+        # Date-only S3 prefix — accountid and region live inside the Parquet data
+        Prefix: 'data/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/'
+        ErrorOutputPrefix: 'errors/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/'
+        BufferingHints:
+          SizeInMBs: 128
+          IntervalInSeconds: 60
+        CompressionFormat: UNCOMPRESSED   # Parquet files handle compression internally via ParquetSerDe
+        # Inline JSON-to-Parquet conversion using Glue table schema
+        DataFormatConversionConfiguration:
+          Enabled: true
+          InputFormatConfiguration:
+            Deserializer:
+              OpenXJsonSerDe: {}
+          OutputFormatConfiguration:
+            Serializer:
+              ParquetSerDe:
+                Compression: SNAPPY
+          SchemaConfiguration:
+            RoleARN: !GetAtt FirehoseRole.Arn
+            DatabaseName: !Ref BedrockLogsGlueDatabase
+            TableName: bedrock_invocations
+            Region: !Ref AWS::Region
+            VersionId: LATEST
+        # Dynamic partitioning disabled — date prefix is handled by Firehose timestamp expressions
+        DynamicPartitioningConfiguration:
+          Enabled: false
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            # Decompress CWL gzip+base64 envelopes into plain JSON lines
+            - Type: Lambda
+              Parameters:
+                - ParameterName: LambdaArn
+                  ParameterValue: !GetAtt CWLUnpackFunction.Arn
+                - ParameterName: NumberOfRetries
+                  ParameterValue: '3'
+                - ParameterName: BufferSizeInMBs
+                  ParameterValue: '3'
+                - ParameterName: BufferIntervalInSeconds
+                  ParameterValue: '60'
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref FirehoseLogGroup
+          LogStreamName: S3Delivery
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  # ---------------------------------------------------------------------------
+  # IAM Role for CloudWatch Logs Destination (central account)
+  # CWL assumes this role when delivering log events to the Firehose stream.
+  # This is separate from FirehoseRole (which trusts firehose.amazonaws.com).
+  # ---------------------------------------------------------------------------
+  CWLDestinationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: bedrock-cwl-destination-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action: sts:AssumeRole
+            Condition:
+              StringLike:
+                aws:SourceArn: !Sub 'arn:aws:logs:${AWS::Region}:*:*'
+      Policies:
+        - PolicyName: PutToFirehose
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecordBatch
+                Resource: !GetAtt FirehoseDeliveryStream.Arn
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  # ---------------------------------------------------------------------------
+  # CloudWatch Logs Destination (central account)
+  # Subscription filters in source accounts point to this destination ARN.
+  # The destination wraps the Firehose and handles cross-account CWL delivery.
+  # AWS::Logs::Destination does not support CloudFormation tagging.
+  # ---------------------------------------------------------------------------
+  CWLFirehoseDestination:
+    Type: AWS::Logs::Destination
+    DependsOn:
+      - CWLDestinationRole
+      - FirehoseDeliveryStream
+    Properties:
+      DestinationName: bedrock-firehose-destination-v2
+      RoleArn: !GetAtt CWLDestinationRole.Arn
+      TargetArn: !GetAtt FirehoseDeliveryStream.Arn
+      # Allow source accounts to put log events to this destination.
+      # Principal must be the bare 12-digit account ID (not an ARN).
+      DestinationPolicy: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "423143053313"
+            },
+            "Action": "logs:PutSubscriptionFilter",
+            "Resource": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:destination:bedrock-firehose-destination-v2"
+          }]
+        }
+
+Outputs:
+  FirehoseDeliveryStreamArn:
+    Description: 'ARN of the Kinesis Data Firehose delivery stream'
+    Value: !GetAtt FirehoseDeliveryStream.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-FirehoseDeliveryStreamArn'
+
+  CWLDestinationArn:
+    Description: 'ARN of the CloudWatch Logs destination — use this as DestinationArn in source account subscription filters'
+    Value: !GetAtt CWLFirehoseDestination.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-CWLDestinationArn'
+
+  CrossAccountFirehoseRoleArn:
+    Description: 'ARN of the cross-account IAM role that source account CWLDeliveryRoles assume to call firehose:PutRecord'
+    Value: !GetAtt CrossAccountFirehoseRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-CrossAccountFirehoseRoleArn'
+
+  FirehoseDataLakeBucketName:
+    Description: 'Name of the central S3 bucket where Firehose writes Parquet files'
+    Value: !Ref FirehoseDataLakeBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-FirehoseDataLakeBucketName'
+
+  BedrockAthenaWorkGroupName:
+    Description: 'Name of the Athena workgroup for Bedrock log queries'
+    Value: !Ref BedrockAthenaWorkGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-BedrockAthenaWorkGroupName'
+
+  GlueDatabaseName:
+    Description: 'Name of the Glue database containing the bedrock_invocations table'
+    Value: !Ref BedrockLogsGlueDatabase
+    Export:
+      Name: !Sub '${AWS::StackName}-GlueDatabaseName'

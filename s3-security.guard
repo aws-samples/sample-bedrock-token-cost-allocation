@@ -1,25 +1,29 @@
 # cfn-guard rules — S3 bucket security baseline
-# Enforces versioning, AES-256 encryption, and all four public-access blocks
-# on every AWS::S3::Bucket resource in the template under validation.
+# Enforces encryption and all four public-access blocks on every
+# AWS::S3::Bucket resource in the template under validation.
+# Versioning is validated only when explicitly configured (see Rule 1).
 #
-# Satisfies: Requirement 11.3
+# Satisfies: Requirements 11.3, 12.4, 12.5
 
 let s3_buckets = Resources.*[ Type == 'AWS::S3::Bucket' ]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Rule 1 — Versioning must be enabled
+# Rule 1 — If versioning is configured, it must be Enabled (not Suspended)
+# Note: bedrock-firehose-data-lake.yaml omits versioning intentionally (Req 1.6)
 # ─────────────────────────────────────────────────────────────────────────────
-rule s3_versioning_enabled when %s3_buckets !empty {
-    %s3_buckets.Properties.VersioningConfiguration.Status == "Enabled"
-        << S3 bucket must have VersioningConfiguration.Status set to "Enabled" to satisfy cross-account replication prerequisites and data-recovery requirements. >>
+rule s3_versioning_when_configured when %s3_buckets !empty {
+    %s3_buckets[
+        Properties.VersioningConfiguration exists
+    ].Properties.VersioningConfiguration.Status == "Enabled"
+        << When VersioningConfiguration is present, Status must be "Enabled". >>
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Rule 2 — Server-side encryption with AES-256 must be configured
+# Rule 2 — Server-side encryption must be configured (AES256 or aws:kms)
 # ─────────────────────────────────────────────────────────────────────────────
-rule s3_aes256_encryption when %s3_buckets !empty {
-    %s3_buckets.Properties.BucketEncryption.ServerSideEncryptionConfiguration[*].ServerSideEncryptionByDefault.SSEAlgorithm == "AES256"
-        << S3 bucket must have BucketEncryption configured with SSEAlgorithm "AES256" to encrypt all objects at rest. >>
+rule s3_encryption_required when %s3_buckets !empty {
+    %s3_buckets.Properties.BucketEncryption.ServerSideEncryptionConfiguration[*].ServerSideEncryptionByDefault.SSEAlgorithm IN ["AES256", "aws:kms"]
+        << S3 bucket must have BucketEncryption configured with SSEAlgorithm "AES256" or "aws:kms". >>
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -52,4 +56,27 @@ rule s3_ignore_public_acls when %s3_buckets !empty {
 rule s3_restrict_public_buckets when %s3_buckets !empty {
     %s3_buckets.Properties.PublicAccessBlockConfiguration.RestrictPublicBuckets == true
         << S3 bucket must have PublicAccessBlockConfiguration.RestrictPublicBuckets set to true to restrict cross-account access to public bucket policies. >>
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rule 7 — No Glue Crawler, Job, or Trigger (Firehose template uses inline
+# conversion + Partition Projection — no ETL pipeline needed)
+# ─────────────────────────────────────────────────────────────────────────────
+let glue_crawlers = Resources.*[ Type == 'AWS::Glue::Crawler' ]
+let glue_jobs = Resources.*[ Type == 'AWS::Glue::Job' ]
+let glue_triggers = Resources.*[ Type == 'AWS::Glue::Trigger' ]
+
+rule no_glue_crawler {
+    %glue_crawlers empty
+        << AWS::Glue::Crawler is not permitted in this template. Use Athena Partition Projection instead. >>
+}
+
+rule no_glue_job {
+    %glue_jobs empty
+        << AWS::Glue::Job is not permitted. Firehose performs inline JSON-to-Parquet conversion. >>
+}
+
+rule no_glue_trigger {
+    %glue_triggers empty
+        << AWS::Glue::Trigger is not permitted. No ETL job scheduling is needed. >>
 }
