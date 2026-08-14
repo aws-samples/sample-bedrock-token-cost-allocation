@@ -15,11 +15,7 @@ This sample shows how to attribute Amazon Bedrock token costs back to individual
 
 ## Architecture
 
-![Bedrock Data Lake Architecture](./bedrock-data-lake-architecture.jpg)
-
-**Cost attribution via Inference Profiles**
-
-`bedrock-logging.yaml` also creates an [Application Inference Profile](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-create.html) (`bedrock-observability-profile`) that wraps a foundation model. When your application invokes Bedrock through this profile, the profile ARN appears in both the invocation logs (`modelid` field) and in AWS Cost and Usage Report (CUR) line items (`line_item_resource_id`). This makes it possible to join logs to cost data — see [Athena Query Reference](./Bedrock%20Data%20Lake%20SQL.md).
+![Bedrock Data Lake Architecture](./bedrock-firehose-architecture.jpg)
 
 ---
 
@@ -32,7 +28,7 @@ This sample shows how to attribute Amazon Bedrock token costs back to individual
 - Python 3 with `boto3` installed (`pip install boto3`) — required for the test script in Step 6
 - (Optional) AWS CUR v2 enabled and exported to Athena if you want cost join queries
 
-**Region constraint:** Both stacks must be deployed to **`us-east-1`**. The Application Inference Profile in `bedrock-logging.yaml` references the Amazon Nova Pro foundation model ARN, which is only available in `us-east-1`. Deploying to other regions will cause the `BedrockObservabilityProfile` resource to fail.
+**Region constraint:** Both stacks must be deployed to **`us-east-1`**.
 
 **Default parameter warning:** `bedrock-logging.yaml` has a hardcoded default value for `CentralDataLakeAccountId`. Always pass this parameter explicitly (as shown in Step 2) — never rely on the default.
 
@@ -67,7 +63,7 @@ aws cloudformation wait stack-create-complete \
 
 ### Step 2 — Deploy the logging stack to each linked account
 
-Pass the central account ID as `CentralDataLakeAccountId`. This creates the local S3 bucket, CloudWatch log group, IAM roles, and the Application Inference Profile.
+Pass the central account ID as `CentralDataLakeAccountId`. This creates the local S3 bucket, CloudWatch log group, and IAM roles.
 
 ```bash
 CENTRAL_ACCOUNT_ID=<your-central-account-id>
@@ -222,12 +218,6 @@ Once both manual steps above are complete:
 1. Make a test Bedrock invocation in the linked account:
 
 ```bash
-INFERENCE_PROFILE_ARN=$(aws cloudformation describe-stacks \
-  --stack-name bedrock-logging \
-  --query 'Stacks[0].Outputs[?OutputKey==`BedrockInferenceProfileArn`].OutputValue' \
-  --output text --region us-east-1 \
-  --profile <linked-account-profile>)
-
 python scripts/test_bedrock_invocation.py \
   --profile <linked-account-profile> \
   --region us-east-1 \
@@ -299,7 +289,7 @@ The ETL writes to `bedrock_logs.bedrock_invocations_processed` in Parquet format
 | `region` | string | AWS region where the invocation occurred |
 | `requestid` | string | Unique request ID |
 | `operation` | string | API called — `Converse`, `InvokeModel`, etc. |
-| `modelid` | string | Model ID or Application Inference Profile ARN used for the invocation |
+| `modelid` | string | Model ID used for the invocation |
 | `identity_arn` | string | IAM principal ARN of the caller, e.g. `arn:aws:sts::123456789012:assumed-role/my-role/session` — use this to attribute usage to a team, service, or user |
 | `requestmetadata` | map&lt;string,string&gt; | Optional key-value tags supplied by the caller via [per-request metadata](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-request-metadata.html) |
 | `input` | struct | `inputbodyjson` (string), `inputcontenttype` (string), `inputtokencount` (int) |
@@ -330,7 +320,7 @@ ORDER BY invocations DESC;
 
 For the full query reference including the CUR cost join, see [Bedrock Data Lake SQL.md](./Bedrock%20Data%20Lake%20SQL.md).
 
-**Joining to CUR:** Bedrock invocations made through an Application Inference Profile use the profile ARN as the `modelid` in logs and as `line_item_resource_id` in CUR. Joining on these two fields plus a time window gives you per-invocation cost estimates. You can also join on `identity_arn` matched against `line_item_iam_principal` in CUR to attribute cost by IAM role and pull in any resource tags (`team`, `project`, etc.) applied to that role. See the SQL file for both join patterns.
+**Joining to CUR:** The `modelid` in invocation logs corresponds to `line_item_resource_id` in CUR. Joining on these two fields plus a time window gives you per-invocation cost estimates. You can also join on `identity_arn` matched against `line_item_iam_principal` in CUR to attribute cost by IAM role and pull in any resource tags (`team`, `project`, etc.) applied to that role. See the SQL file for both join patterns.
 
 ---
 
@@ -602,6 +592,8 @@ Use the `bedrock-analytics` workgroup. The view extracts:
 - `usage_cache_read_tokens`, `usage_cache_write_tokens` — cache prompt tokens (Amazon Nova models)
 - `stop_reason` — why the model stopped generating (e.g. `end_turn`, `max_tokens`)
 - `prompt_preview`, `response_preview` — first content element from input/output body JSON
+
+All `usage_*` fields use `TRY_CAST` so they return `NULL` instead of failing if the JSON path doesn't exist for a given model's response format. This ensures the view works across different Bedrock models (Nova, Claude, Titan, etc.) that structure their output JSON differently.
 
 The raw table uses date-only partitions (`year`, `month`, `day`) with no mandatory WHERE clause constraints, so you can query across all accounts and regions freely.
 

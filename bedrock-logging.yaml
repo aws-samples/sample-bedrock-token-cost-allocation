@@ -102,27 +102,6 @@ Resources:
         - Key: FinOps
           Value: bedrock-logging
 
-  # Application Inference Profile for cost attribution by project/team
-  BedrockObservabilityProfile:
-    Type: AWS::Bedrock::ApplicationInferenceProfile
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - E3001   # cfn-lint schema may not yet include AWS::Bedrock::ApplicationInferenceProfile
-    Properties:
-      InferenceProfileName: bedrock-observability-profile
-      Description: Inference profile for Bedrock observability and cost tracking demo
-      ModelSource:
-        CopyFrom: arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0
-      Tags:
-        - Key: FinOps
-          Value: bedrock-logging
-        - Key: Project
-          Value: bedrock-observability
-        - Key: Team
-          Value: finops
-
   # ---------------------------------------------------------------------------
   # CloudWatch Logs subscription filter pointing at the central CWL Destination
   # The destination in the central account handles auth to Firehose — no
@@ -148,9 +127,3 @@ Outputs:
     Value: !GetAtt BedrockLoggingRole.Arn
     Export:
       Name: !Sub '${AWS::StackName}-LoggingRoleArn'
-
-  BedrockInferenceProfileArn:
-    Description: ARN of the Application Inference Profile
-    Value: !Ref BedrockObservabilityProfile
-    Export:
-      Name: !Sub '${AWS::StackName}-InferenceProfileArn'

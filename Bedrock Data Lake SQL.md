@@ -63,7 +63,7 @@ ORDER BY total_unblended_cost DESC;
 | Bedrock field | CUR field | Notes |
 |---|---|---|
 | `account_id` | `line_item_usage_account_id` | Exact match |
-| `modelid` | `line_item_resource_id` | Both are inference profile ARNs |
+| `modelid` | `line_item_resource_id` | Model ID from invocation logs |
 | `regexp_replace(identity_arn, '/[^/]+$', '')` | `regexp_replace(line_item_iam_principal, '/[^/]+$', '')` | Strip STS session suffix so `assumed-role/my-role/session` matches `role/my-role` |
 | `date_trunc('hour', timestamp)` | `line_item_usage_start_date` → `line_item_usage_end_date` | Bedrock log hour falls within CUR hourly bucket |
 
@@ -164,6 +164,8 @@ ORDER BY total_unblended_cost DESC;
 
 Extracts the user prompt and assistant response from the invocation logs and joins to CUR cost data.
 
+> **Note:** For the Firehose pipeline, use the flattened `bedrock_invocations_view` instead of the raw `bedrock_invocations_processed` table — it already extracts token counts and text fields for you.
+
 ```sql
 WITH bedrock AS (
     SELECT
@@ -224,6 +226,32 @@ JOIN cur_bedrock c
     AND b.log_hour   < c.line_item_usage_end_date
 ORDER BY b.timestamp DESC;
 ```
+
+### Firehose pipeline: Query the flattened view
+
+The `bedrock_invocations_view` already extracts usage token counts and text fields, so you can query it directly:
+
+```sql
+SELECT
+    accountid,
+    modelid,
+    timestamp,
+    requestid,
+    usage_input_tokens,
+    usage_output_tokens,
+    usage_cache_read_tokens,
+    usage_cache_write_tokens,
+    stop_reason,
+    prompt_preview,
+    response_preview
+FROM "bedrock_logs"."bedrock_invocations_view"
+WHERE year = '2026'
+  AND month = '08'
+ORDER BY timestamp DESC
+LIMIT 100;
+```
+
+All `usage_*` fields use `TRY_CAST` so they return `NULL` instead of failing if the JSON path doesn't exist for a given model's response format.
 
 ```sql
 SELECT
