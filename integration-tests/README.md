@@ -74,16 +74,11 @@ Both stacks must reach `CREATE_COMPLETE` or `UPDATE_COMPLETE` before proceeding.
 
 ## Step 3: Invoke a Bedrock Model to Generate a Log Entry
 
-Use the Application Inference Profile created by the stack to produce an invocation log. Run this from each source account to generate log entries in both.
+Make a Bedrock model invocation to produce an invocation log. Run this from each source account to generate log entries in both.
 
 ```bash
-PROFILE_ARN=$(aws cloudformation describe-stacks \
-  --stack-name bedrock-observability \
-  --query "Stacks[0].Outputs[?OutputKey=='BedrockInferenceProfileArn'].OutputValue" \
-  --output text)
-
 aws bedrock-runtime invoke-model \
-  --model-id "$PROFILE_ARN" \
+  --model-id "amazon.nova-pro-v1:0" \
   --body '{"messages":[{"role":"user","content":[{"type":"text","text":"Say hello"}]}],"max_tokens":10,"anthropic_version":"bedrock-2023-05-31"}' \
   --cli-binary-format raw-in-base64-out \
   /tmp/bedrock-response.json

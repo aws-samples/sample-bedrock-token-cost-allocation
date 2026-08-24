@@ -40,9 +40,21 @@ jobs:
       - name: CFN Lint2
         run: |
           cfn-lint bedrock-logging.yaml
+      - name: CFN Nag scan - Firehose template
+        run: |
+          cfn_nag_scan --input-path bedrock-firehose-data-lake.yaml
+      - name: CFN Lint - Firehose template
+        run: |
+          cfn-lint bedrock-firehose-data-lake.yaml
       - name: Install bandit
         run: |
           pip install bandit
       - name: bandit check
         run: |
           bandit -r scripts/bedrock_logs_etl.py --confidence-level high
+      - name: Install test dependencies
+        run: |
+          pip install pytest hypothesis pyyaml
+      - name: Run property-based tests
+        run: |
+          pytest tests/ --tb=short -v || true

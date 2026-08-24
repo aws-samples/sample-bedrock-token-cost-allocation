@@ -1,5 +1,7 @@
 # Bedrock Token Cost Allocation
 
+> **Two architectures available**: This repo includes two pipeline architectures. The **Firehose pipeline** (`bedrock-firehose-data-lake.yaml`) is the recommended approach — it delivers Parquet data to Athena in ~60 seconds with no manual steps. The **S3 replication pipeline** (`bedrock-data-lake.yaml`) is the original architecture, preserved for reference. See [Firehose Pipeline](#firehose-pipeline-recommended) below.
+
 This sample shows how to attribute Amazon Bedrock token costs back to individual teams, projects, or business units using **Amazon Bedrock Invocation Logs** and a centralized data lake.
 
 **What it does:**
@@ -13,11 +15,7 @@ This sample shows how to attribute Amazon Bedrock token costs back to individual
 
 ## Architecture
 
-![Bedrock Data Lake Architecture](./bedrock-data-lake-architecture.jpg)
-
-**Cost attribution via Inference Profiles**
-
-`bedrock-logging.yaml` also creates an [Application Inference Profile](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-create.html) (`bedrock-observability-profile`) that wraps a foundation model. When your application invokes Bedrock through this profile, the profile ARN appears in both the invocation logs (`modelid` field) and in AWS Cost and Usage Report (CUR) line items (`line_item_resource_id`). This makes it possible to join logs to cost data — see [Athena Query Reference](./Bedrock%20Data%20Lake%20SQL.md).
+![Bedrock Data Lake Architecture](./bedrock-firehose-architecture.jpg)
 
 ---
 
@@ -30,7 +28,7 @@ This sample shows how to attribute Amazon Bedrock token costs back to individual
 - Python 3 with `boto3` installed (`pip install boto3`) — required for the test script in Step 6
 - (Optional) AWS CUR v2 enabled and exported to Athena if you want cost join queries
 
-**Region constraint:** Both stacks must be deployed to **`us-east-1`**. The Application Inference Profile in `bedrock-logging.yaml` references the Amazon Nova Pro foundation model ARN, which is only available in `us-east-1`. Deploying to other regions will cause the `BedrockObservabilityProfile` resource to fail.
+**Region constraint:** Both stacks must be deployed to **`us-east-1`**.
 
 **Default parameter warning:** `bedrock-logging.yaml` has a hardcoded default value for `CentralDataLakeAccountId`. Always pass this parameter explicitly (as shown in Step 2) — never rely on the default.
 
@@ -65,7 +63,7 @@ aws cloudformation wait stack-create-complete \
 
 ### Step 2 — Deploy the logging stack to each linked account
 
-Pass the central account ID as `CentralDataLakeAccountId`. This creates the local S3 bucket, CloudWatch log group, IAM roles, and the Application Inference Profile.
+Pass the central account ID as `CentralDataLakeAccountId`. This creates the local S3 bucket, CloudWatch log group, and IAM roles.
 
 ```bash
 CENTRAL_ACCOUNT_ID=<your-central-account-id>
@@ -220,12 +218,6 @@ Once both manual steps above are complete:
 1. Make a test Bedrock invocation in the linked account:
 
 ```bash
-INFERENCE_PROFILE_ARN=$(aws cloudformation describe-stacks \
-  --stack-name bedrock-logging \
-  --query 'Stacks[0].Outputs[?OutputKey==`BedrockInferenceProfileArn`].OutputValue' \
-  --output text --region us-east-1 \
-  --profile <linked-account-profile>)
-
 python scripts/test_bedrock_invocation.py \
   --profile <linked-account-profile> \
   --region us-east-1 \
@@ -297,7 +289,7 @@ The ETL writes to `bedrock_logs.bedrock_invocations_processed` in Parquet format
 | `region` | string | AWS region where the invocation occurred |
 | `requestid` | string | Unique request ID |
 | `operation` | string | API called — `Converse`, `InvokeModel`, etc. |
-| `modelid` | string | Model ID or Application Inference Profile ARN used for the invocation |
+| `modelid` | string | Model ID used for the invocation |
 | `identity_arn` | string | IAM principal ARN of the caller, e.g. `arn:aws:sts::123456789012:assumed-role/my-role/session` — use this to attribute usage to a team, service, or user |
 | `requestmetadata` | map&lt;string,string&gt; | Optional key-value tags supplied by the caller via [per-request metadata](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-request-metadata.html) |
 | `input` | struct | `inputbodyjson` (string), `inputcontenttype` (string), `inputtokencount` (int) |
@@ -328,7 +320,7 @@ ORDER BY invocations DESC;
 
 For the full query reference including the CUR cost join, see [Bedrock Data Lake SQL.md](./Bedrock%20Data%20Lake%20SQL.md).
 
-**Joining to CUR:** Bedrock invocations made through an Application Inference Profile use the profile ARN as the `modelid` in logs and as `line_item_resource_id` in CUR. Joining on these two fields plus a time window gives you per-invocation cost estimates. You can also join on `identity_arn` matched against `line_item_iam_principal` in CUR to attribute cost by IAM role and pull in any resource tags (`team`, `project`, etc.) applied to that role. See the SQL file for both join patterns.
+**Joining to CUR:** The `modelid` in invocation logs corresponds to `line_item_resource_id` in CUR. Joining on these two fields plus a time window gives you per-invocation cost estimates. You can also join on `identity_arn` matched against `line_item_iam_principal` in CUR to attribute cost by IAM role and pull in any resource tags (`team`, `project`, etc.) applied to that role. See the SQL file for both join patterns.
 
 ---
 
@@ -431,6 +423,179 @@ The `AllowCrossAccountReplication` bucket policy statement grants access based o
 ```
 
 This provides defense-in-depth so a mistyped or compromised role ARN from outside your organization cannot replicate data into the lake.
+
+---
+
+---
+
+## Firehose Pipeline (Recommended)
+
+The Firehose pipeline replaces S3 cross-account replication and the Glue ETL job with a simpler, lower-latency path:
+
+**CloudWatch Logs → Kinesis Firehose → S3 Parquet (in ~60 seconds)**
+
+Compared to the original S3-replication pipeline:
+
+| | Firehose pipeline | S3 replication pipeline |
+|---|---|---|
+| Per-account S3 bucket | None | Required |
+| Manual bucket policy step | None | Required (Step 4) |
+| ETL job | None | Daily Glue PySpark job |
+| MSCK REPAIR TABLE | None | Required after each ETL run |
+| Latency | ~60 seconds | ~24 hours |
+| Data format | Parquet (Snappy) | Parquet (Snappy, after ETL) |
+
+### Firehose Pipeline: Prerequisites
+
+Same as the original pipeline plus:
+- The central account must be deployed before source account stacks
+- No manual bucket policy step is needed
+
+### Firehose Pipeline: Deployment
+
+#### Step 1 — Deploy the central account stack
+
+```bash
+# Deploy central account stack
+aws cloudformation create-stack \
+  --stack-name bedrock-firehose-data-lake \
+  --template-body file://bedrock-firehose-data-lake.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameters ParameterKey=SourceAccountIds,ParameterValue=<source-account-1>,<source-account-2> \
+  --region us-east-1 \
+  --profile <central-account-profile>
+
+aws cloudformation wait stack-create-complete \
+  --stack-name bedrock-firehose-data-lake \
+  --region us-east-1 \
+  --profile <central-account-profile>
+```
+
+#### Step 2 — Get the Firehose ARN and cross-account role ARN from stack Outputs
+
+```bash
+FIREHOSE_STREAM_ARN=$(aws cloudformation describe-stacks \
+  --stack-name bedrock-firehose-data-lake \
+  --query 'Stacks[0].Outputs[?OutputKey==`FirehoseDeliveryStreamArn`].OutputValue' \
+  --output text --region us-east-1 \
+  --profile <central-account-profile>)
+
+CROSS_ACCOUNT_ROLE_ARN=$(aws cloudformation describe-stacks \
+  --stack-name bedrock-firehose-data-lake \
+  --query 'Stacks[0].Outputs[?OutputKey==`CrossAccountFirehoseRoleArn`].OutputValue' \
+  --output text --region us-east-1 \
+  --profile <central-account-profile>)
+```
+
+#### Step 3 — Deploy the updated source account stack
+
+```bash
+# Repeat for each source account
+aws cloudformation create-stack \
+  --stack-name bedrock-logging \
+  --template-body file://bedrock-logging.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameters \
+    ParameterKey=CentralFirehoseStreamArn,ParameterValue=$FIREHOSE_STREAM_ARN \
+    ParameterKey=CentralFirehoseRoleArn,ParameterValue=$CROSS_ACCOUNT_ROLE_ARN \
+  --region us-east-1 \
+  --profile <source-account-profile>
+
+aws cloudformation wait stack-create-complete \
+  --stack-name bedrock-logging \
+  --region us-east-1 \
+  --profile <source-account-profile>
+```
+
+#### Step 4 — Enable Bedrock model invocation logging (run in each source account)
+
+```bash
+LOGGING_ROLE_ARN=$(aws cloudformation describe-stacks \
+  --stack-name bedrock-logging \
+  --query 'Stacks[0].Outputs[?OutputKey==`BedrockLoggingRoleArn`].OutputValue' \
+  --output text --region us-east-1 \
+  --profile <source-account-profile>)
+
+aws bedrock put-model-invocation-logging-configuration \
+  --logging-config "{
+    \"cloudWatchConfig\": {
+      \"logGroupName\": \"/aws/bedrock/modelinvocations\",
+      \"roleArn\": \"$LOGGING_ROLE_ARN\"
+    },
+    \"textDataDeliveryEnabled\": true,
+    \"imageDataDeliveryEnabled\": true,
+    \"embeddingDataDeliveryEnabled\": true
+  }" \
+  --region us-east-1 \
+  --profile <source-account-profile>
+```
+
+#### Step 5 — Create the Athena view (one-time step)
+
+The central stack deploys a `bedrock_invocations_view` saved query that flattens nested JSON fields from `input` and `output` structs. Run this once to create the view:
+
+```bash
+# Get the named query ID deployed by CloudFormation
+NAMED_QUERY_ID=$(aws athena list-named-queries \
+  --work-group bedrock-analytics \
+  --region us-east-1 \
+  --profile <central-account-profile> \
+  --query 'NamedQueryIds[0]' --output text)
+
+# Get the SQL and execute it to create the view
+QUERY=$(aws athena get-named-query \
+  --named-query-id $NAMED_QUERY_ID \
+  --region us-east-1 \
+  --profile <central-account-profile> \
+  --query 'NamedQuery.QueryString' --output text)
+
+aws athena start-query-execution \
+  --query-string "$QUERY" \
+  --work-group bedrock-analytics \
+  --region us-east-1 \
+  --profile <central-account-profile>
+```
+
+After this completes, `bedrock_invocations_view` will appear in the Athena console under the `bedrock_logs` database.
+
+#### Step 6 — Query in Athena (~60 seconds after first invocation)
+
+Query the raw table:
+
+```sql
+SELECT accountid, modelid, COUNT(*) AS invocations,
+       SUM(input.inputtokencount) AS total_input_tokens,
+       SUM(output.outputtokencount) AS total_output_tokens
+FROM bedrock_logs.bedrock_invocations
+WHERE year = '2026'
+  AND month = '08'
+GROUP BY accountid, modelid
+ORDER BY invocations DESC;
+```
+
+Or use the flattened view to access extracted token counts, stop reason, and prompt/response previews:
+
+```sql
+SELECT accountid, modelid, identity,
+       SUM(usage_input_tokens) AS total_input,
+       SUM(usage_output_tokens) AS total_output,
+       COUNT(*) AS invocations
+FROM bedrock_logs.bedrock_invocations_view
+WHERE year = '2026'
+  AND month = '08'
+GROUP BY accountid, modelid, identity
+ORDER BY invocations DESC;
+```
+
+Use the `bedrock-analytics` workgroup. The view extracts:
+- `usage_input_tokens`, `usage_output_tokens`, `usage_total_tokens` — token counts from `output.outputbodyjson` usage fields
+- `usage_cache_read_tokens`, `usage_cache_write_tokens` — cache prompt tokens (Amazon Nova models)
+- `stop_reason` — why the model stopped generating (e.g. `end_turn`, `max_tokens`)
+- `prompt_preview`, `response_preview` — first content element from input/output body JSON
+
+All `usage_*` fields use `TRY_CAST` so they return `NULL` instead of failing if the JSON path doesn't exist for a given model's response format. This ensures the view works across different Bedrock models (Nova, Claude, Titan, etc.) that structure their output JSON differently.
+
+The raw table uses date-only partitions (`year`, `month`, `day`) with no mandatory WHERE clause constraints, so you can query across all accounts and regions freely.
 
 ---
 

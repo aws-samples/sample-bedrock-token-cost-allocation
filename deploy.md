@@ -15,7 +15,7 @@ You need two AWS accounts:
 
 Both accounts must be accessible from your local machine. See **Authentication** below to configure access.
 
-**Region:** Deploy everything to `us-east-1`. The Application Inference Profile references an Amazon Nova Pro foundation model ARN that is only available in that region.
+**Region:** Deploy everything to `us-east-1`.
 
 ---
 
@@ -208,14 +208,6 @@ aws bedrock put-model-invocation-logging-configuration \
 ### Step 6 — Verify end-to-end
 
 ```bash
-# Get inference profile ARN
-INFERENCE_PROFILE_ARN=$(aws cloudformation describe-stacks \
-  --stack-name bedrock-logging \
-  --query 'Stacks[0].Outputs[?OutputKey==`BedrockInferenceProfileArn`].OutputValue' \
-  --output text \
-  --region $AWS_REGION \
-  --profile $LINKED_PROFILE)
-
 # Run test invocation
 python scripts/test_bedrock_invocation.py \
   --profile $LINKED_PROFILE \
