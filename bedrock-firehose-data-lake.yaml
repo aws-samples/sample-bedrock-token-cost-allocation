@@ -598,6 +598,8 @@ Resources:
                       # Bedrock log messages are JSON strings
                       try:
                           parsed = json.loads(msg)
+                          # Flatten nested identity.arn to identity_arn for Glue schema
+                          parsed['identity_arn'] = parsed.get('identity', {}).get('arn', '')
                           lines.append(json.dumps(parsed))
                       except Exception:
                           lines.append(msg)
