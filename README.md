@@ -334,7 +334,21 @@ A pre-built QuickSight dashboard (`Bedrock-Invocation-Usage-Dashboard.yaml`) is 
 - Athena `bedrock_invocations_view` created (Step 5 in the verification section above)
 - `cid-cmd` Python tool installed: `pip3 install --upgrade cid-cmd`
 
-The `bedrock-data-lake` stack deploys a `BedrockQuickSightDataSourceRole` IAM role with the S3, Athena, and Glue permissions QuickSight needs. You must point the `CID-CMD-Athena` datasource at this role before deploying — do this once after the data lake stack is deployed:
+The `bedrock-firehose-data-lake` stack deploys a `BedrockQuickSightDataSourceRole` IAM role with the S3, KMS, Athena, and Glue permissions QuickSight needs. The role includes `kms:Decrypt` only for the Firehose data-lake key. The Athena workgroup enforces SSE-S3 for query results, so the role does not need access to the Athena-results KMS key for normal queries.
+
+QuickSight datasources are managed separately from CloudFormation. Every Athena datasource used by this solution must use the dedicated role; otherwise QuickSight falls back to `aws-quicksight-service-role-v0`, which does not have access to this data lake. Verify a datasource before using it:
+
+```bash
+aws quicksight describe-data-source \
+  --aws-account-id <central-account-id> \
+  --data-source-id <athena-datasource-id> \
+  --region us-east-1 \
+  --profile <central-account-profile> \
+  --query 'DataSource.DataSourceParameters.AthenaParameters.RoleArn' \
+  --output text
+```
+
+For `CID-CMD-Athena`, set the dedicated role after the Firehose stack is deployed:
 
 ```bash
 aws quicksight update-data-source \
@@ -346,7 +360,7 @@ aws quicksight update-data-source \
   --profile <central-account-profile>
 ```
 
-If `CID-CMD-Athena` doesn't exist yet (first time deploying), skip this step — `cid-cmd` will create it and prompt you to select `BedrockQuickSightDataSourceRole`.
+If the datasource does not exist yet, let `cid-cmd` create it and select `BedrockQuickSightDataSourceRole` when prompted. If an error names `aws-quicksight-service-role-v0`, inspect the datasource's `RoleArn` and update that datasource rather than adding broad data-lake permissions to the QuickSight service role.
 
 ### Deploy the dashboard
 
@@ -365,7 +379,7 @@ When prompted:
 
 ### Refresh dataset
 
-After new data is processed by the Glue ETL job, refresh the QuickSight SPICE dataset:
+After a new invocation reaches the Firehose S3 data lake (typically within about 60 seconds), refresh the QuickSight SPICE dataset:
 
 ```bash
 cid-cmd refresh --dashboard-id bedrock-invocation-usage-dashboard

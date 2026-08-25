@@ -834,6 +834,16 @@ Resources:
                 Resource:
                   - !GetAtt FirehoseDataLakeBucket.Arn
                   - !Sub '${FirehoseDataLakeBucket.Arn}/*'
+        - PolicyName: DataLakeKmsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DecryptDataLakeObjects
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: !GetAtt DataLakeKmsKey.Arn
         - PolicyName: AthenaResultsAccess
           PolicyDocument:
             Version: '2012-10-17'
