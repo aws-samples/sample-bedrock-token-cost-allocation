@@ -773,6 +773,94 @@ Resources:
           }]
         }
 
+  # ---------------------------------------------------------------------------
+  # IAM Role for QuickSight to access Athena, Glue, and S3
+  # QuickSight assumes this role when querying the bedrock_invocations table.
+  # ---------------------------------------------------------------------------
+  BedrockQuickSightDataSourceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: BedrockQuickSightDataSourceRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: quicksight.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AthenaQueryAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - athena:GetWorkGroup
+                  - athena:StartQueryExecution
+                  - athena:StopQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:GetQueryResultsStream
+                  - athena:ListQueryExecutions
+                  - athena:BatchGetQueryExecution
+                Resource:
+                  - !Sub 'arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${BedrockAthenaWorkGroup}'
+        - PolicyName: GlueCatalogAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetDatabases
+                  - glue:GetTable
+                  - glue:GetTables
+                  - glue:GetPartition
+                  - glue:GetPartitions
+                  - glue:BatchGetPartition
+                Resource:
+                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${BedrockLogsGlueDatabase}'
+                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${BedrockLogsGlueDatabase}/*'
+        - PolicyName: S3DataLakeAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt FirehoseDataLakeBucket.Arn
+                  - !Sub '${FirehoseDataLakeBucket.Arn}/*'
+        - PolicyName: DataLakeKmsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DecryptDataLakeObjects
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: !GetAtt DataLakeKmsKey.Arn
+        - PolicyName: AthenaResultsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt BedrockAthenaResultsBucket.Arn
+                  - !Sub '${BedrockAthenaResultsBucket.Arn}/*'
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
 Outputs:
   FirehoseDeliveryStreamArn:
     Description: 'ARN of the Kinesis Data Firehose delivery stream'
@@ -809,3 +897,9 @@ Outputs:
     Value: !Ref BedrockLogsGlueDatabase
     Export:
       Name: !Sub '${AWS::StackName}-GlueDatabaseName'
+
+  QuickSightDataSourceRoleArn:
+    Description: 'ARN of the IAM role for QuickSight to access Athena and the data lake'
+    Value: !GetAtt BedrockQuickSightDataSourceRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-QuickSightDataSourceRoleArn'
