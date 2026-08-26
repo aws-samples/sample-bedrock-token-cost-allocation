@@ -56,6 +56,7 @@ All deployment commands are in [deploy.md](../deploy.md). Follow the steps in or
 - **Region is always `us-east-1`** — do not change this without warning the user (the Bedrock foundation model ARN is region-specific)
 - **Always wait for stack completion** before the next step — use `aws cloudformation wait stack-create-complete`
 - **Never delete S3 buckets automatically** — they have `DeletionPolicy: Retain`; emptying them requires explicit user confirmation
+- **Re-deploying after a stack delete** — retained resources block a fresh `create-stack`; run the pre-flight check in [redeployment.md](./redeployment.md) first
 - **The bucket policy (Step 4) must be applied via CLI**, not CloudFormation — explain why if the user asks
 
 ## Personal deployment config

@@ -102,16 +102,43 @@ Resources:
         - Key: FinOps
           Value: bedrock-logging
 
+  # IAM role that CloudWatch Logs assumes to validate organization-scoped
+  # cross-account subscription filters. This role is required when the central
+  # destination policy uses aws:PrincipalOrgID.
+  CWLSubscriptionFilterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: bedrock-cwl-subscription-filter-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ValidateBedrockLogGroupSubscription
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock/modelinvocations:*'
+      Tags:
+        - Key: FinOps
+          Value: bedrock-logging
+
   # ---------------------------------------------------------------------------
   # CloudWatch Logs subscription filter pointing at the central CWL Destination
-  # The destination in the central account handles auth to Firehose — no
-  # CWLDeliveryRole or cross-account IAM role is needed in this account.
+  # The destination in the central account handles delivery to Firehose. The
+  # sender-account role is required for an organization-scoped destination policy.
   # ---------------------------------------------------------------------------
   BedrockCWLSubscriptionFilter:
     Type: AWS::Logs::SubscriptionFilter
     Properties:
       LogGroupName: !Ref BedrockLogsGroup
       DestinationArn: !Ref CentralCWLDestinationArn
+      RoleArn: !GetAtt CWLSubscriptionFilterRole.Arn
       FilterPattern: ''
       FilterName: bedrock-firehose-subscription
 

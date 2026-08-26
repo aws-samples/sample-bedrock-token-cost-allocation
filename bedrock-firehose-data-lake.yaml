@@ -1,10 +1,11 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Bedrock Firehose Data Lake - Central account resources: Firehose delivery stream with inline JSON-to-Parquet conversion, S3 data lake bucket, Glue schema table with partition projection, Athena workgroup, and cross-account IAM roles'
+Description: 'Bedrock Firehose Data Lake - Firehose delivery stream with inline JSON-to-Parquet conversion, S3 data lake bucket, Glue schema table with partition projection, Athena workgroup, and organization-scoped CloudWatch Logs destination'
 
 Parameters:
-  SourceAccountIds:
-    Type: CommaDelimitedList
-    Description: 'Comma-delimited list of source AWS account IDs (1–10) whose CWLDeliveryRoles are permitted to assume the CrossAccountFirehoseRole in this central account.'
+  OrganizationId:
+    Type: String
+    AllowedPattern: '^o-[a-z0-9]{10,32}$'
+    Description: 'AWS Organizations ID whose accounts may create subscription filters for the central CloudWatch Logs destination.'
 
 Resources:
 
@@ -204,49 +205,6 @@ Resources:
             Condition:
               Bool:
                 'aws:SecureTransport': false
-
-  # ---------------------------------------------------------------------------
-  # Cross-Account Firehose IAM Role
-  # Source account CWLDeliveryRoles assume this to call firehose:PutRecord.
-  # Satisfies: Requirements 4.1, 4.2, 4.3, 4.4, 4.5
-  # ---------------------------------------------------------------------------
-  CrossAccountFirehoseRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: bedrock-cross-account-firehose-role
-      # Wildcard principal + StringLike on aws:PrincipalArn is required because
-      # CloudFormation CommaDelimitedList cannot construct per-element IAM ARNs
-      # via !Sub in a Principal block. This scopes trust to any account's
-      # bedrock-cwl-delivery-role specifically — no other role matches.
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              AWS: '*'
-            Action: sts:AssumeRole
-            Condition:
-              StringLike:
-                aws:PrincipalArn: 'arn:aws:iam::*:role/bedrock-cwl-delivery-role'
-      Tags:
-        - Key: FinOps
-          Value: bedrock-firehose-data-lake
-
-  CrossAccountFirehoseRolePolicy:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      ManagedPolicyName: bedrock-cross-account-firehose-policy
-      Roles:
-        - !Ref CrossAccountFirehoseRole
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Sid: FirehosePutOnly
-            Effect: Allow
-            Action:
-              - firehose:PutRecord
-              - firehose:PutRecordBatch
-            Resource: !Sub 'arn:aws:firehose:${AWS::Region}:${AWS::AccountId}:deliverystream/bedrock-invocations-v2'
 
   # ---------------------------------------------------------------------------
   # IAM Role for Firehose delivery stream
@@ -496,23 +454,28 @@ Resources:
           input.inputcontenttype AS input_content_type,
           output.outputtokencount AS output_token_count,
           output.outputcontenttype AS output_content_type,
-          TRY_CAST(json_extract_scalar(output.outputbodyjson, '$.usage.inputTokens') AS INTEGER) AS usage_input_tokens,
-          TRY_CAST(json_extract_scalar(output.outputbodyjson, '$.usage.outputTokens') AS INTEGER) AS usage_output_tokens,
-          TRY_CAST(json_extract_scalar(output.outputbodyjson, '$.usage.totalTokens') AS INTEGER) AS usage_total_tokens,
-          TRY_CAST(json_extract_scalar(output.outputbodyjson, '$.usage.cacheReadInputTokenCount') AS INTEGER) AS usage_cache_read_tokens,
-          TRY_CAST(json_extract_scalar(output.outputbodyjson, '$.usage.cacheWriteInputTokenCount') AS INTEGER) AS usage_cache_write_tokens,
-          json_extract_scalar(output.outputbodyjson, '$.stopReason') AS stop_reason,
+          -- JSON keys below are lowercase on purpose. Firehose converts records with
+          -- the OpenX JSON SerDe, which is case-insensitive and lowercases every key,
+          -- so the stringified inputbodyjson/outputbodyjson contain 'inputtokens' and
+          -- 'stopreason' rather than 'inputTokens' and 'stopReason'. CamelCase paths
+          -- silently return NULL.
+          TRY_CAST(json_extract_scalar(output.outputbodyjson, '$.usage.inputtokens') AS INTEGER) AS usage_input_tokens,
+          TRY_CAST(json_extract_scalar(output.outputbodyjson, '$.usage.outputtokens') AS INTEGER) AS usage_output_tokens,
+          TRY_CAST(json_extract_scalar(output.outputbodyjson, '$.usage.totaltokens') AS INTEGER) AS usage_total_tokens,
+          TRY_CAST(json_extract_scalar(output.outputbodyjson, '$.usage.cachereadinputtokencount') AS INTEGER) AS usage_cache_read_tokens,
+          TRY_CAST(json_extract_scalar(output.outputbodyjson, '$.usage.cachewriteinputtokencount') AS INTEGER) AS usage_cache_write_tokens,
+          json_extract_scalar(output.outputbodyjson, '$.stopreason') AS stop_reason,
           COALESCE(
             json_extract_scalar(output.outputbodyjson, '$.output.message.content[0].text'),
             json_extract_scalar(output.outputbodyjson, '$.content[0].text'),
             json_extract_scalar(output.outputbodyjson, '$.completion'),
-            json_extract_scalar(output.outputbodyjson, '$.outputText')
+            json_extract_scalar(output.outputbodyjson, '$.outputtext')
           ) AS response_preview,
           COALESCE(
             json_extract_scalar(input.inputbodyjson, '$.messages[0].content[0].text'),
             json_extract_scalar(input.inputbodyjson, '$.messages[0].content'),
             json_extract_scalar(input.inputbodyjson, '$.prompt'),
-            json_extract_scalar(input.inputbodyjson, '$.inputText')
+            json_extract_scalar(input.inputbodyjson, '$.inputtext')
           ) AS prompt_preview
         FROM
           "bedrock_logs"."bedrock_invocations"
@@ -758,18 +721,24 @@ Resources:
       DestinationName: bedrock-firehose-destination-v2
       RoleArn: !GetAtt CWLDestinationRole.Arn
       TargetArn: !GetAtt FirehoseDeliveryStream.Arn
-      # Allow source accounts to put log events to this destination.
-      # Principal must be the bare 12-digit account ID (not an ARN).
+      # Allow accounts in the configured AWS Organization to create subscription filters.
+      # The organization condition prevents public access while scaling to all linked accounts.
       DestinationPolicy: !Sub |
         {
           "Version": "2012-10-17",
           "Statement": [{
+            "Sid": "AllowOrganizationAccounts",
             "Effect": "Allow",
             "Principal": {
-              "AWS": "423143053313"
+              "AWS": "*"
             },
             "Action": "logs:PutSubscriptionFilter",
-            "Resource": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:destination:bedrock-firehose-destination-v2"
+            "Resource": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:destination:bedrock-firehose-destination-v2",
+            "Condition": {
+              "StringEquals": {
+                "aws:PrincipalOrgID": "${OrganizationId}"
+              }
+            }
           }]
         }
 
@@ -873,12 +842,6 @@ Outputs:
     Value: !GetAtt CWLFirehoseDestination.Arn
     Export:
       Name: !Sub '${AWS::StackName}-CWLDestinationArn'
-
-  CrossAccountFirehoseRoleArn:
-    Description: 'ARN of the cross-account IAM role that source account CWLDeliveryRoles assume to call firehose:PutRecord'
-    Value: !GetAtt CrossAccountFirehoseRole.Arn
-    Export:
-      Name: !Sub '${AWS::StackName}-CrossAccountFirehoseRoleArn'
 
   FirehoseDataLakeBucketName:
     Description: 'Name of the central S3 bucket where Firehose writes Parquet files'

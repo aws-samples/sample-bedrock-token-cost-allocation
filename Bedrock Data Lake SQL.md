@@ -7,7 +7,7 @@ All queries run in the `bedrock-analytics` workgroup against account `2609901984
 ## Quick preview
 
 ```sql
-SELECT * FROM bedrock_logs.bedrock_invocations_processed LIMIT 10;
+SELECT * FROM bedrock_logs.bedrock_invocations LIMIT 10;
 ```
 
 ---
@@ -35,7 +35,7 @@ SELECT
     SUM(b.input.inputtokencount)     AS total_input_tokens,
     SUM(b.output.outputtokencount)   AS total_output_tokens,
     SUM(c.line_item_unblended_cost)  AS total_unblended_cost
-FROM bedrock_logs.bedrock_invocations_processed b
+FROM bedrock_logs.bedrock_invocations b
 JOIN cid_data_export.cur2 c
     ON  b.account_id = c.line_item_usage_account_id
     AND b.modelid    = c.line_item_resource_id
@@ -85,7 +85,7 @@ arn:aws:iam::123456789012:role/my-role
 
 ```sql
 SELECT account_id, modelid, COUNT(*) AS invocations
-FROM bedrock_logs.bedrock_invocations_processed
+FROM bedrock_logs.bedrock_invocations
 GROUP BY account_id, modelid
 ORDER BY invocations DESC;
 ```
@@ -108,7 +108,7 @@ WITH bedrock AS (
         date_trunc('hour', from_iso8601_timestamp(timestamp)) AS log_hour,
         input.inputtokencount  AS input_tokens,
         output.outputtokencount AS output_tokens
-    FROM "bedrock_logs"."bedrock_invocations_processed"
+    FROM "bedrock_logs"."bedrock_invocations"
     WHERE modelid LIKE '%infer%'
 ),
 cur_bedrock AS (
@@ -164,7 +164,7 @@ ORDER BY total_unblended_cost DESC;
 
 Extracts the user prompt and assistant response from the invocation logs and joins to CUR cost data.
 
-> **Note:** For the Firehose pipeline, use the flattened `bedrock_invocations_view` instead of the raw `bedrock_invocations_processed` table — it already extracts token counts and text fields for you.
+> **Note:** For the Firehose pipeline, use the flattened `bedrock_invocations_view` instead of the raw `bedrock_invocations` table — it already extracts token counts and text fields for you.
 
 ```sql
 WITH bedrock AS (
@@ -190,7 +190,7 @@ WITH bedrock AS (
             json_extract_scalar(output.outputbodyjson, '$.completion'),
             json_extract_scalar(output.outputbodyjson, '$.outputText')
         ) AS assistant_response
-    FROM "bedrock_logs"."bedrock_invocations_processed"
+    FROM "bedrock_logs"."bedrock_invocations"
     WHERE modelid LIKE '%infer%'
 ),
 cur_bedrock AS (
@@ -259,7 +259,7 @@ SELECT
     b.account_id,
     COUNT(b.requestid)  AS invocations,
     SUM(c.line_item_unblended_cost) AS daily_cost
-FROM "bedrock_logs"."bedrock_invocations_processed" b
+FROM "bedrock_logs"."bedrock_invocations" b
 JOIN "cid_data_export"."cur2" c
     ON  b.account_id = c.line_item_usage_account_id
     AND b.modelid    = c.line_item_resource_id
