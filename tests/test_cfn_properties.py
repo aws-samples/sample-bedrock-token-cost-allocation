@@ -10,6 +10,7 @@ These tests validate invariants that the templates must maintain:
 Uses pytest + hypothesis for property-based testing against static YAML parsing.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -184,85 +185,83 @@ def test_firehose_role_least_privilege(central_template):
 
 
 # ---------------------------------------------------------------------------
-# Test 2.4: CrossAccountFirehoseRole Least Privilege
+# Test 2.4: Cross-account delivery uses the CloudWatch Logs destination only
 # Validates: Requirements 4.2, 4.3, 4.4
+#
+# The pipeline delivers cross-account log events through an organization-scoped
+# CloudWatch Logs destination. The former CrossAccountFirehoseRole trusted
+# `AWS: "*"` with only a wildcard `aws:PrincipalArn` condition, which Palisade
+# treats as publicly assumable, and it is no longer part of the architecture.
 # ---------------------------------------------------------------------------
 
-CROSS_ACCOUNT_ALLOWED_ACTIONS = {"firehose:PutRecord", "firehose:PutRecordBatch"}
+
+def test_no_wildcard_assumable_cross_account_role(central_template):
+    """
+    Test 2.4a: The template must not define the removed CrossAccountFirehoseRole.
+
+    Re-introducing it would recreate the Palisade
+    IAMRoleAllowsAssumptionByExternalAccount finding.
+    """
+    resources = central_template.get("Resources", {})
+    for name in ("CrossAccountFirehoseRole", "CrossAccountFirehoseRolePolicy"):
+        assert name not in resources, (
+            f"{name} was removed for security reasons; cross-account delivery must "
+            "go through the CloudWatch Logs destination instead"
+        )
 
 
-def test_cross_account_firehose_role_least_privilege(central_template):
+def test_no_role_trusts_wildcard_principal_without_org_scope(central_template):
     """
-    Test 2.4: CrossAccountFirehoseRole only allows firehose:PutRecord and PutRecordBatch.
-    
-    The CrossAccountFirehoseRolePolicy must:
-    - Have exactly two allowed actions: firehose:PutRecord and firehose:PutRecordBatch
-    - Not have Resource: "*"
-    - Resource must be scoped to a specific Firehose delivery stream ARN
+    Test 2.4b: No IAM role trust policy may allow `AWS: "*"`.
+
+    A wildcard principal scoped only by `aws:PrincipalArn` still permits any
+    account to assume the role, so it is rejected outright.
     """
-    statements = get_policy_statements(central_template, "CrossAccountFirehoseRolePolicy")
-    assert len(statements) > 0, "CrossAccountFirehoseRolePolicy should have statements"
-    
-    all_actions = set()
-    for stmt in statements:
-        # Check no wildcard resources
-        resources = normalize_resources(stmt.get("Resource"))
-        for resource in resources:
-            if isinstance(resource, str):
-                assert resource != "*", (
-                    "CrossAccountFirehoseRolePolicy has Resource: '*'"
-                )
-                # Resource should be a Firehose ARN pattern
-                # CloudFormation !Sub returns a dict, so we check string resources
-                if not resource.startswith("arn:"):
-                    continue
-                assert "firehose" in resource or "deliverystream" in resource, (
-                    f"CrossAccountFirehoseRole resource should be a Firehose ARN: {resource}"
-                )
-        
-        # Collect actions
-        actions = normalize_actions(stmt.get("Action"))
-        all_actions.update(actions)
-    
-    # Verify only allowed actions
-    assert all_actions == CROSS_ACCOUNT_ALLOWED_ACTIONS, (
-        f"CrossAccountFirehoseRole should only have {CROSS_ACCOUNT_ALLOWED_ACTIONS}, "
-        f"but has {all_actions}"
+    for name, resource in central_template.get("Resources", {}).items():
+        if resource.get("Type") != "AWS::IAM::Role":
+            continue
+        trust = resource.get("Properties", {}).get("AssumeRolePolicyDocument", {})
+        for stmt in trust.get("Statement", []):
+            if stmt.get("Effect") != "Allow":
+                continue
+            principal = stmt.get("Principal", {})
+            if not isinstance(principal, dict):
+                continue
+            aws_principal = principal.get("AWS")
+            principals = aws_principal if isinstance(aws_principal, list) else [aws_principal]
+            assert "*" not in principals, (
+                f"IAM role {name} trusts a wildcard AWS principal, which allows "
+                "assumption by any account"
+            )
+
+
+def test_cwl_destination_policy_is_organization_scoped(central_template):
+    """
+    Test 2.4c: The CloudWatch Logs destination policy must be scoped by organization.
+
+    The destination is the only cross-account entry point, so its policy must
+    constrain callers with aws:PrincipalOrgID rather than leaving them open.
+    """
+    destination = central_template["Resources"]["CWLFirehoseDestination"]
+    policy = destination["Properties"]["DestinationPolicy"]
+
+    # DestinationPolicy is built with !Sub, so compare against the raw template text.
+    policy_text = json.dumps(policy) if not isinstance(policy, str) else policy
+
+    assert "aws:PrincipalOrgID" in policy_text, (
+        "CWLFirehoseDestination policy must restrict callers with aws:PrincipalOrgID"
+    )
+    assert "logs:PutSubscriptionFilter" in policy_text, (
+        "CWLFirehoseDestination policy should grant logs:PutSubscriptionFilter"
     )
 
 
-@given(
-    source_account_ids=st.lists(
-        st.from_regex(r"[0-9]{12}", fullmatch=True),
-        min_size=1,
-        max_size=10,
-    )
-)
-@settings(max_examples=20)
-def test_cross_account_trust_policy_pattern(source_account_ids):
-    """
-    Property test: Trust policy would only allow bedrock-cwl-delivery-role from source accounts.
-    
-    Verifies that the trust policy pattern (StringLike on aws:PrincipalArn) would correctly
-    match only the expected role ARNs for any valid 12-digit account ID.
-    """
-    # The trust policy uses: arn:aws:iam::*:role/bedrock-cwl-delivery-role
-    trust_pattern = r"arn:aws:iam::\*:role/bedrock-cwl-delivery-role"
-    
-    for account_id in source_account_ids:
-        expected_arn = f"arn:aws:iam::{account_id}:role/bedrock-cwl-delivery-role"
-        # The pattern with wildcard * should match any account's bedrock-cwl-delivery-role
-        # Simulate StringLike matching: * matches any sequence
-        pattern_regex = trust_pattern.replace(r"\*", r"[0-9]{12}")
-        assert re.match(pattern_regex, expected_arn), (
-            f"Trust pattern should match {expected_arn}"
-        )
-        
-        # Verify other roles would NOT match
-        other_role_arn = f"arn:aws:iam::{account_id}:role/some-other-role"
-        assert not re.match(pattern_regex, other_role_arn), (
-            f"Trust pattern should NOT match {other_role_arn}"
-        )
+# The former test_cross_account_trust_policy_pattern property test was removed
+# with the CrossAccountFirehoseRole. It asserted that a wildcard account trust
+# pattern (arn:aws:iam::*:role/bedrock-cwl-delivery-role) matched correctly,
+# which encoded the publicly-assumable trust policy as expected behaviour.
+# test_no_role_trusts_wildcard_principal_without_org_scope now guards the
+# opposite invariant.
 
 
 # ---------------------------------------------------------------------------
@@ -513,10 +512,11 @@ def test_template_has_required_outputs(central_template):
     
     required_outputs = {
         "FirehoseDeliveryStreamArn",
-        "CrossAccountFirehoseRoleArn",
+        "CWLDestinationArn",
         "FirehoseDataLakeBucketName",
         "BedrockAthenaWorkGroupName",
         "GlueDatabaseName",
+        "QuickSightDataSourceRoleArn",
     }
     
     actual_outputs = set(outputs.keys())
