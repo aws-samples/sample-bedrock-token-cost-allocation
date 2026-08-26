@@ -558,14 +558,23 @@ Resources:
                   lines = []
                   for evt in payload.get('logEvents', []):
                       msg = evt.get('message', '')
-                      # Bedrock log messages are JSON strings
+                      # Bedrock log messages are JSON objects. Skip anything else:
+                      # CloudWatch Logs emits plain-text notices such as
+                      # "Permissions are correctly set for Amazon Bedrock logs."
+                      # when logging is enabled, and forwarding those to Firehose
+                      # fails Parquet conversion with DataFormatConversion.ParseError.
                       try:
                           parsed = json.loads(msg)
-                          # Flatten nested identity.arn to identity_arn for Glue schema
-                          parsed['identity_arn'] = parsed.get('identity', {}).get('arn', '')
-                          lines.append(json.dumps(parsed))
-                      except Exception:
-                          lines.append(msg)
+                      except (ValueError, TypeError):
+                          continue
+                      if not isinstance(parsed, dict):
+                          continue
+                      # Flatten nested identity.arn to identity_arn for Glue schema
+                      identity = parsed.get('identity')
+                      parsed['identity_arn'] = (
+                          identity.get('arn', '') if isinstance(identity, dict) else ''
+                      )
+                      lines.append(json.dumps(parsed))
 
                   if not lines:
                       output.append({'recordId': record['recordId'],
