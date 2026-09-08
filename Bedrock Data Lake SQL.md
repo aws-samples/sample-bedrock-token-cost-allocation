@@ -20,7 +20,7 @@ Joins Bedrock invocation logs to CUR on `identity_arn` matched against `line_ite
 
 ```sql
 SELECT
-    b.account_id,
+    b.accountid,
     b.identity_arn,
     regexp_replace(b.identity_arn, '/[^/]+$', '') AS identity_role_arn,
     c.line_item_iam_principal,
@@ -37,7 +37,7 @@ SELECT
     SUM(c.line_item_unblended_cost)  AS total_unblended_cost
 FROM bedrock_logs.bedrock_invocations b
 JOIN cid_data_export.cur2 c
-    ON  b.account_id = c.line_item_usage_account_id
+    ON  b.accountid = c.line_item_usage_account_id
     AND b.modelid    = c.line_item_resource_id
     -- Strip STS session suffix so assumed-role/my-role/session matches role/my-role in CUR
     AND regexp_replace(b.identity_arn, '/[^/]+$', '') = regexp_replace(c.line_item_iam_principal, '/[^/]+$', '')
@@ -47,7 +47,7 @@ WHERE b.modelid LIKE '%infer%'
   AND c.line_item_resource_id LIKE '%infer%'
   AND c.line_item_iam_principal IS NOT NULL
 GROUP BY
-    b.account_id,
+    b.accountid,
     b.identity_arn,
     regexp_replace(b.identity_arn, '/[^/]+$', ''),
     c.line_item_iam_principal,
