@@ -262,7 +262,7 @@ The repository includes `Bedrock-Invocation-Usage-Dashboard.yaml`, which visuali
 
 - QuickSight Enterprise edition activated in the central account.
 - The `bedrock_invocations_view` Athena view created successfully.
-- `cid-cmd` installed: `pip3 install --upgrade cid-cmd`.
+- [`cid-cmd`](https://github.com/aws-solutions-library-samples/cloud-intelligence-dashboards-framework/blob/main/CID-CMD.md) installed: `pip3 install --upgrade cid-cmd`.
 - The QuickSight datasource uses the role output by the central Firehose stack:
   `arn:aws:iam::<central-account-id>:role/BedrockQuickSightDataSourceRole`.
 
