@@ -59,7 +59,11 @@ Resources:
     UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Sub 'bedrock-firehose-lake-${AWS::AccountId}'
-      # No VersioningConfiguration — Firehose writes new objects; versioning not required (Req 1.6)
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref S3AccessLogBucket
+        LogFilePrefix: firehose-data-lake/
       OwnershipControls:
         Rules:
           - ObjectOwnership: BucketOwnerEnforced
@@ -164,6 +168,11 @@ Resources:
     UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Sub 'bedrock-athena-results-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref S3AccessLogBucket
+        LogFilePrefix: athena-results/
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -184,8 +193,90 @@ Resources:
         - Key: FinOps
           Value: bedrock-firehose-data-lake
 
+  # Dedicated S3 server access-log destination. This bucket intentionally does
+  # not enable logging because S3 does not support logging a destination bucket
+  # to itself.
+  S3AccessLogBucket:
+    # checkov:skip=CKV_AWS_18: Dedicated S3 access-log destination cannot log to itself.
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: 'Dedicated S3 access-log destination cannot log to itself.'
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: 'Dedicated S3 access-log destination cannot log to itself.'
+    Properties:
+      BucketName: !Sub 'bedrock-s3-access-logs-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAccessLogs
+            Status: Enabled
+            ExpirationInDays: 365
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  S3AccessLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3AccessLogBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt S3AccessLogBucket.Arn
+              - !Sub '${S3AccessLogBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+          - Sid: AllowFirehoseBucketAccessLogs
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${S3AccessLogBucket.Arn}/firehose-data-lake/*'
+            Condition:
+              ArnLike:
+                'aws:SourceArn': !GetAtt FirehoseDataLakeBucket.Arn
+              StringEquals:
+                'aws:SourceAccount': !Ref AWS::AccountId
+          - Sid: AllowAthenaResultsBucketAccessLogs
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${S3AccessLogBucket.Arn}/athena-results/*'
+            Condition:
+              ArnLike:
+                'aws:SourceArn': !GetAtt BedrockAthenaResultsBucket.Arn
+              StringEquals:
+                'aws:SourceAccount': !Ref AWS::AccountId
+
   # ---------------------------------------------------------------------------
-  # Bucket policy: deny non-HTTPS access to Athena results bucket
+  # Bucket policy: deny non-HTTPS access to the Athena results bucket
   # Satisfies: Requirements 6.8
   # ---------------------------------------------------------------------------
   BedrockAthenaResultsBucketPolicy:
@@ -353,13 +444,52 @@ Resources:
               - '/data/year=${year}/month=${month}/day=${day}'
 
   # ---------------------------------------------------------------------------
-  # SNS Topic and CloudWatch Alarms for Firehose observability
-  # Satisfies: Requirements 13.3, 13.5
+  # KMS customer managed key for SNS alarm notifications
   # ---------------------------------------------------------------------------
+  FirehoseAlarmKmsKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: 'CMK for Bedrock Firehose alarm SNS topic encryption'
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowAccountRoot
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowSNSTopicEncryption
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref AWS::AccountId
+              ArnLike:
+                'aws:SourceArn': !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:bedrock-firehose-alarms'
+      Tags:
+        - Key: FinOps
+          Value: bedrock-firehose-data-lake
+
+  FirehoseAlarmKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/bedrock-firehose-alarm-key
+      TargetKeyId: !Ref FirehoseAlarmKmsKey
+
   FirehoseAlarmTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: bedrock-firehose-alarms
+      KmsMasterKeyId: !GetAtt FirehoseAlarmKmsKey.Arn
       Tags:
         - Key: FinOps
           Value: bedrock-firehose-data-lake
@@ -723,9 +853,6 @@ Resources:
   # ---------------------------------------------------------------------------
   CWLFirehoseDestination:
     Type: AWS::Logs::Destination
-    DependsOn:
-      - CWLDestinationRole
-      - FirehoseDeliveryStream
     Properties:
       DestinationName: bedrock-firehose-destination-v2
       RoleArn: !GetAtt CWLDestinationRole.Arn

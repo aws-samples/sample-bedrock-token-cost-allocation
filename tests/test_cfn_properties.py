@@ -344,7 +344,9 @@ def test_partition_path_format(year, month, day):
 # Validates: Requirements 1.7, 6.7
 # ---------------------------------------------------------------------------
 
-S3_BUCKET_NAME_PATTERN = re.compile(r"^bedrock-(firehose-lake|athena-results)-[0-9]{12}$")
+S3_BUCKET_NAME_PATTERN = re.compile(
+    r"^bedrock-(firehose-lake|athena-results|s3-access-logs)-[0-9]{12}$"
+)
 
 
 def test_bucket_naming_convention(central_template):
@@ -383,6 +385,7 @@ def test_bucket_name_generation(account_id):
     """
     firehose_bucket = f"bedrock-firehose-lake-{account_id}"
     athena_bucket = f"bedrock-athena-results-{account_id}"
+    access_logs_bucket = f"bedrock-s3-access-logs-{account_id}"
     
     # S3 bucket name constraints: 3-63 chars, lowercase, numbers, hyphens
     s3_name_pattern = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
@@ -392,6 +395,9 @@ def test_bucket_name_generation(account_id):
     )
     assert s3_name_pattern.match(athena_bucket), (
         f"Athena bucket name '{athena_bucket}' is invalid"
+    )
+    assert s3_name_pattern.match(access_logs_bucket), (
+        f"Access-log bucket name '{access_logs_bucket}' is invalid"
     )
     
     # Verify correct length
@@ -535,3 +541,65 @@ def test_all_buckets_have_deletion_policy(central_template):
             assert deletion_policy == "Retain", (
                 f"Bucket {resource_name} should have DeletionPolicy: Retain"
             )
+
+
+def test_s3_buckets_have_logging_and_versioning(central_template):
+    """Verify reported S3 buckets log access requests and retain object versions."""
+    resources = central_template.get("Resources", {})
+    access_log_bucket = resources["S3AccessLogBucket"]
+
+    assert access_log_bucket["Properties"]["VersioningConfiguration"]["Status"] == "Enabled"
+    assert "LoggingConfiguration" not in access_log_bucket["Properties"], (
+        "The dedicated access-log destination must not log to itself"
+    )
+
+    for bucket_name, prefix in {
+        "FirehoseDataLakeBucket": "firehose-data-lake/",
+        "BedrockAthenaResultsBucket": "athena-results/",
+    }.items():
+        properties = resources[bucket_name]["Properties"]
+        assert properties["VersioningConfiguration"]["Status"] == "Enabled"
+        logging = properties["LoggingConfiguration"]
+        assert logging["DestinationBucketName"] == {"Ref": "S3AccessLogBucket"}
+        assert logging["LogFilePrefix"] == prefix
+
+    policy = resources["S3AccessLogBucketPolicy"]["Properties"]["PolicyDocument"]
+    log_delivery_statements = [
+        statement
+        for statement in policy["Statement"]
+        if statement.get("Principal") == {"Service": "logging.s3.amazonaws.com"}
+    ]
+    assert len(log_delivery_statements) == 2
+    for statement in log_delivery_statements:
+        assert statement["Action"] == "s3:PutObject"
+        assert statement["Condition"]["StringEquals"]["aws:SourceAccount"] == {
+            "Ref": "AWS::AccountId"
+        }
+        assert "aws:SourceArn" in statement["Condition"]["ArnLike"]
+
+
+def test_sns_alarm_topic_is_kms_encrypted(central_template):
+    """Verify the alarm topic uses a constrained, rotating customer key."""
+    resources = central_template.get("Resources", {})
+    topic = resources["FirehoseAlarmTopic"]["Properties"]
+    assert topic["KmsMasterKeyId"] == {
+        "Fn::GetAtt": "FirehoseAlarmKmsKey.Arn"
+    }
+
+    key = resources["FirehoseAlarmKmsKey"]
+    assert key["Properties"]["EnableKeyRotation"] is True
+    statements = key["Properties"]["KeyPolicy"]["Statement"]
+    sns_statement = next(
+        statement for statement in statements if statement.get("Sid") == "AllowSNSTopicEncryption"
+    )
+    assert sns_statement["Principal"] == {"Service": "sns.amazonaws.com"}
+    assert "kms:Decrypt" in sns_statement["Action"]
+    assert "kms:GenerateDataKey*" in sns_statement["Action"]
+    assert sns_statement["Condition"]["StringEquals"]["aws:SourceAccount"] == {
+        "Ref": "AWS::AccountId"
+    }
+    assert "aws:SourceArn" in sns_statement["Condition"]["ArnLike"]
+
+    for alarm_name in ("FirehoseDataFreshnessAlarm", "FirehoseDeliverySuccessAlarm"):
+        actions = resources[alarm_name]["Properties"]["AlarmActions"]
+        assert {"Ref": "FirehoseAlarmTopic"} in actions
