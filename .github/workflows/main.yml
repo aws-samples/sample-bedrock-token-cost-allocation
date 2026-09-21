@@ -25,24 +25,18 @@ jobs:
       - name: Install CFN tools
         run: |
           gem install cfn-nag
-      - name: CFN Nag scan
+      - name: CFN Nag scan - logging template
         run: |
-          cfn_nag_scan --input-path  bedrock-data-lake.yaml
-      - name: CFN Nag scan2
-        run: |
-          cfn_nag_scan --input-path  bedrock-logging.yaml
-      - name: Install cfn-lint
-        run: |
-          pip install cfn-lint
-      - name: CFN Lint
-        run: |
-          cfn-lint bedrock-data-lake.yaml
-      - name: CFN Lint2
-        run: |
-          cfn-lint bedrock-logging.yaml
+          cfn_nag_scan --input-path bedrock-logging.yaml
       - name: CFN Nag scan - Firehose template
         run: |
           cfn_nag_scan --input-path bedrock-firehose-data-lake.yaml
+      - name: Install cfn-lint
+        run: |
+          pip install cfn-lint
+      - name: CFN Lint - logging template
+        run: |
+          cfn-lint bedrock-logging.yaml
       - name: CFN Lint - Firehose template
         run: |
           cfn-lint bedrock-firehose-data-lake.yaml
