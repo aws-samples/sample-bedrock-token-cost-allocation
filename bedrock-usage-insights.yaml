@@ -1,0 +1,1370 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Optional Bedrock Usage Insights control plane and privacy-filtered derived-data
+  store. This stack is disabled by default and does not redefine or modify the
+  existing Bedrock invocation data lake, Athena workgroup, or QuickSight role.
+
+Parameters:
+  FeatureEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Runtime enablement flag. The feature remains disabled until the analysis
+      service accepts an enabled configuration.
+
+  ContentAnalysisEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Explicit content-analysis opt-in. Content analysis also requires approved
+      account, Region, access-policy, retention, and redaction controls.
+
+  DashboardPublicationMode:
+    Type: String
+    Default: aggregate_only
+    AllowedValues: [aggregate_only, disabled]
+    Description: Dashboard publication is aggregate-only by default; individual results are not supported.
+
+  MinimumGroupSize:
+    Type: Number
+    Default: 10
+    MinValue: 5
+    MaxValue: 100000
+    Description: Minimum distinct qualifying subjects required before an aggregate group is published.
+
+  DerivedDataRetentionDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 30
+    Description: >-
+      Retention for derived objects and operational logs. The default and upper
+      bound do not exceed the source CloudWatch delivery-log retention.
+
+  ExistingGlueDatabaseName:
+    Type: String
+    Default: bedrock_logs
+    AllowedPattern: '^[a-zA-Z0-9_\-]{1,255}$'
+    Description: Existing Glue database containing bedrock_invocations_view; referenced read-only.
+
+  ExistingSourceViewName:
+    Type: String
+    Default: bedrock_invocations_view
+    AllowedPattern: '^[a-zA-Z0-9_\-]{1,255}$'
+    Description: Existing Athena source view; referenced read-only and never redefined by this stack.
+
+  ExistingAthenaWorkGroupName:
+    Type: String
+    Default: bedrock-analytics
+    AllowedPattern: '^[a-zA-Z0-9_\-]{1,128}$'
+    Description: Existing Athena workgroup used for all source queries; referenced read-only.
+
+  ContentApprovalReference:
+    Type: String
+    Default: ''
+    MaxLength: 256
+    Description: Approved access-policy or governance record required by the runtime before content analysis.
+
+  ContentApprovedAccountId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[0-9]{12}$'
+    Description: Approved account boundary for content analysis; empty while content analysis is disabled.
+
+  ContentApprovedRegion:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$'
+    Description: Approved Region boundary for content analysis; empty while content analysis is disabled.
+
+Conditions:
+  ContentAnalysisEnabledCondition: !Equals [!Ref ContentAnalysisEnabled, 'true']
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # Feature-owned encryption and notification resources
+  # ---------------------------------------------------------------------------
+  InsightsKmsKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: KMS key for Bedrock Usage Insights feature-owned data and alarms
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowAccountRoot
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowSnsEncryption
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Tags:
+        - Key: FinOps
+          Value: bedrock-usage-insights
+        - Key: FeatureState
+          Value: !Ref FeatureEnabled
+
+  InsightsKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/bedrock-usage-insights-key
+      TargetKeyId: !Ref InsightsKmsKey
+
+  InsightsAlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub bedrock-usage-insights-alarms-${AWS::AccountId}
+      KmsMasterKeyId: !GetAtt InsightsKmsKey.Arn
+      Tags:
+        - Key: FinOps
+          Value: bedrock-usage-insights
+
+  # ---------------------------------------------------------------------------
+  # Feature-owned encrypted object store. All derived data is written beneath
+  # feature-owned prefixes; no source bucket or source object is modified.
+  # ---------------------------------------------------------------------------
+  InsightsAccessLogBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub bedrock-usage-insights-access-logs-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireInsightsAccessLogs
+            Status: Enabled
+            ExpirationInDays: !Ref DerivedDataRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: !Ref DerivedDataRetentionDays
+      Tags:
+        - Key: FinOps
+          Value: bedrock-usage-insights
+
+  InsightsDataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub bedrock-usage-insights-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref InsightsAccessLogBucket
+        LogFilePrefix: insights-data/
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt InsightsKmsKey.Arn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireDerivedInsights
+            Status: Enabled
+            Prefix: insights/
+            ExpirationInDays: !Ref DerivedDataRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: !Ref DerivedDataRetentionDays
+      Tags:
+        - Key: FinOps
+          Value: bedrock-usage-insights
+        - Key: FeatureState
+          Value: !Ref FeatureEnabled
+        - Key: ContentAnalysisDefault
+          Value: !Ref ContentAnalysisEnabled
+
+  InsightsDataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref InsightsDataBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt InsightsDataBucket.Arn
+              - !Sub ${InsightsDataBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+          - Sid: AllowAnalysisFeaturePrefixes
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt InsightsAnalysisRole.Arn
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:AbortMultipartUpload
+            Resource: !Sub ${InsightsDataBucket.Arn}/insights/*
+          - Sid: AllowDashboardAggregatePrefix
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt InsightsDashboardRole.Arn
+            Action: s3:GetObject
+            Resource: !Sub ${InsightsDataBucket.Arn}/insights/runs/*/published/aggregates/*
+
+  InsightsAccessLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref InsightsAccessLogBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonHTTPS
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt InsightsAccessLogBucket.Arn
+              - !Sub ${InsightsAccessLogBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+          - Sid: AllowInsightsAccessLogs
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub ${InsightsAccessLogBucket.Arn}/insights-data/*
+            Condition:
+              ArnLike:
+                aws:SourceArn: !GetAtt InsightsDataBucket.Arn
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # ---------------------------------------------------------------------------
+  # Feature-owned configuration and run-control stores
+  # ---------------------------------------------------------------------------
+  InsightConfigurationTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub bedrock-usage-insights-configurations-${AWS::AccountId}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: configuration_version
+          AttributeType: S
+      KeySchema:
+        - AttributeName: configuration_version
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt InsightsKmsKey.Arn
+      Tags:
+        - Key: FinOps
+          Value: bedrock-usage-insights
+        - Key: Store
+          Value: configuration
+
+  AnalysisRunTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub bedrock-usage-insights-runs-${AWS::AccountId}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: analysis_run_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: analysis_run_id
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt InsightsKmsKey.Arn
+      Tags:
+        - Key: FinOps
+          Value: bedrock-usage-insights
+        - Key: Store
+          Value: run-control
+
+  # ---------------------------------------------------------------------------
+  # Feature-owned Glue data contracts and Athena views
+  #
+  # These tables contain only derived, privacy-filtered fields. The publisher
+  # writes date-partitioned Parquet beneath the feature-owned bucket. Run IDs
+  # remain columns rather than partitions so the stable views are queryable
+  # without an injected partition predicate.
+  #
+  # The source adapter retains the six-month availability contract of
+  # bedrock_invocations_view. The stable result and aggregate views repeat the
+  # same lower-bound filter and only expose committed runs.
+  # ---------------------------------------------------------------------------
+  InsightsResultsGlueTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ExistingGlueDatabaseName
+      TableInput:
+        Name: bedrock_usage_insights_results_data
+        TableType: EXTERNAL_TABLE
+        StorageDescriptor:
+          Location: !Sub s3://${InsightsDataBucket}/insights/results/
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Columns:
+            - Name: source_request_id
+              Type: string
+            - Name: source_timestamp_utc
+              Type: timestamp
+            - Name: result_timestamp_utc
+              Type: timestamp
+            - Name: source_account
+              Type: string
+            - Name: source_region
+              Type: string
+            - Name: model_id
+              Type: string
+            - Name: operation
+              Type: string
+            - Name: analysis_run_id
+              Type: string
+            - Name: configuration_version
+              Type: string
+            - Name: analysis_logic_version
+              Type: string
+            - Name: primary_category
+              Type: string
+            - Name: secondary_categories
+              Type: array<string>
+            - Name: category_scores
+              Type: map<string,double>
+            - Name: confidence_band
+              Type: string
+            - Name: unknown_reason
+              Type: string
+            - Name: evidence_signal_names
+              Type: array<string>
+            - Name: evidence_source_field_classes
+              Type: array<string>
+            - Name: evidence_summaries
+              Type: array<string>
+            - Name: evidence_counts
+              Type: map<string,int>
+            - Name: primary_category_applicability
+              Type: string
+            - Name: secondary_categories_applicability
+              Type: string
+            - Name: scores_applicability
+              Type: string
+            - Name: confidence_band_applicability
+              Type: string
+            - Name: evidence_reference_applicability
+              Type: string
+            - Name: unknown_reason_applicability
+              Type: string
+            - Name: clarity_status
+              Type: string
+            - Name: clarity_score
+              Type: double
+            - Name: clarity_confidence_band
+              Type: string
+            - Name: specificity_status
+              Type: string
+            - Name: specificity_score
+              Type: double
+            - Name: specificity_confidence_band
+              Type: string
+            - Name: context_completeness_status
+              Type: string
+            - Name: context_completeness_score
+              Type: double
+            - Name: context_completeness_confidence_band
+              Type: string
+            - Name: task_definition_status
+              Type: string
+            - Name: task_definition_score
+              Type: double
+            - Name: task_definition_confidence_band
+              Type: string
+            - Name: output_constraints_status
+              Type: string
+            - Name: output_constraints_score
+              Type: double
+            - Name: output_constraints_confidence_band
+              Type: string
+            - Name: prompt_quality_limitation
+              Type: string
+            - Name: input_token_count
+              Type: int
+            - Name: output_token_count
+              Type: int
+            - Name: cache_read_token_count
+              Type: int
+            - Name: cache_write_token_count
+              Type: int
+            - Name: privacy_mode
+              Type: string
+            - Name: use_limitation
+              Type: string
+            - Name: schema_version
+              Type: string
+            - Name: publication_status
+              Type: string
+        Parameters:
+          classification: parquet
+          feature: bedrock-usage-insights
+          privacy_mode: no_raw_prompt_or_response
+          projection.enabled: 'true'
+          projection.year.type: integer
+          projection.year.range: '2020,2100'
+          projection.year.digits: '4'
+          projection.month.type: integer
+          projection.month.range: '01,12'
+          projection.month.digits: '2'
+          projection.day.type: integer
+          projection.day.range: '01,31'
+          projection.day.digits: '2'
+          storage.location.template: !Join
+            - ''
+            - - 's3://'
+              - !Ref InsightsDataBucket
+              - '/insights/results/year=${year}/month=${month}/day=${day}/'
+        PartitionKeys:
+          - Name: year
+            Type: string
+          - Name: month
+            Type: string
+          - Name: day
+            Type: string
+
+  InsightsAggregatesGlueTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ExistingGlueDatabaseName
+      TableInput:
+        Name: bedrock_usage_insights_aggregates_data
+        TableType: EXTERNAL_TABLE
+        StorageDescriptor:
+          Location: !Sub s3://${InsightsDataBucket}/insights/aggregates/
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Columns:
+            - Name: group_type
+              Type: string
+            - Name: group_key
+              Type: string
+            - Name: period_start
+              Type: date
+            - Name: period_end
+              Type: date
+            - Name: analyzed_record_count
+              Type: bigint
+            - Name: classified_record_count
+              Type: bigint
+            - Name: unknown_result_count
+              Type: bigint
+            - Name: not_assessed_count
+              Type: bigint
+            - Name: unknown_result_proportion
+              Type: double
+            - Name: input_token_total
+              Type: bigint
+            - Name: output_token_total
+              Type: bigint
+            - Name: category_distribution
+              Type: map<string,bigint>
+            - Name: confidence_coverage
+              Type: map<string,bigint>
+            - Name: prompt_quality_coverage
+              Type: map<string,bigint>
+            - Name: estimated_or_allocated_cost
+              Type: double
+            - Name: cost_measure_label
+              Type: string
+            - Name: minimum_group_size
+              Type: int
+            - Name: distinct_qualifying_subject_count
+              Type: int
+            - Name: suppressed
+              Type: boolean
+            - Name: analysis_run_id
+              Type: string
+            - Name: configuration_version
+              Type: string
+            - Name: analysis_logic_version
+              Type: string
+            - Name: privacy_mode
+              Type: string
+            - Name: use_limitation
+              Type: string
+            - Name: schema_version
+              Type: string
+            - Name: publication_status
+              Type: string
+        Parameters:
+          classification: parquet
+          feature: bedrock-usage-insights
+          privacy_mode: aggregate_only_no_individual_subjects
+          projection.enabled: 'true'
+          projection.year.type: integer
+          projection.year.range: '2020,2100'
+          projection.year.digits: '4'
+          projection.month.type: integer
+          projection.month.range: '01,12'
+          projection.month.digits: '2'
+          projection.day.type: integer
+          projection.day.range: '01,31'
+          projection.day.digits: '2'
+          storage.location.template: !Join
+            - ''
+            - - 's3://'
+              - !Ref InsightsDataBucket
+              - '/insights/aggregates/year=${year}/month=${month}/day=${day}/'
+        PartitionKeys:
+          - Name: year
+            Type: string
+          - Name: month
+            Type: string
+          - Name: day
+            Type: string
+
+  InsightsRunsGlueTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ExistingGlueDatabaseName
+      TableInput:
+        Name: bedrock_usage_insights_runs_data
+        TableType: EXTERNAL_TABLE
+        StorageDescriptor:
+          Location: !Sub s3://${InsightsDataBucket}/insights/runs/
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Columns:
+            - Name: analysis_run_id
+              Type: string
+            - Name: status
+              Type: string
+            - Name: source_scope_accounts
+              Type: array<string>
+            - Name: source_scope_regions
+              Type: array<string>
+            - Name: source_scope_models
+              Type: array<string>
+            - Name: source_scope_operations
+              Type: array<string>
+            - Name: requested_start_date
+              Type: date
+            - Name: requested_end_date
+              Type: date
+            - Name: source_availability_window_start
+              Type: date
+            - Name: source_availability_window_end
+              Type: date
+            - Name: configuration_version
+              Type: string
+            - Name: analysis_logic_version
+              Type: string
+            - Name: started_at
+              Type: timestamp
+            - Name: ended_at
+              Type: timestamp
+            - Name: output_location
+              Type: string
+            - Name: query_execution_ids
+              Type: array<string>
+            - Name: input_record_count
+              Type: bigint
+            - Name: classified_record_count
+              Type: bigint
+            - Name: unknown_result_count
+              Type: bigint
+            - Name: not_assessed_count
+              Type: bigint
+            - Name: processing_error_count
+              Type: bigint
+            - Name: redaction_event_count
+              Type: bigint
+            - Name: suppressed_group_count
+              Type: bigint
+            - Name: dashboard_publication_requested
+              Type: boolean
+            - Name: dashboard_publication_approved
+              Type: boolean
+            - Name: transmission_requested
+              Type: boolean
+            - Name: publication_status
+              Type: string
+            - Name: privacy_mode
+              Type: string
+            - Name: schema_version
+              Type: string
+            - Name: use_limitation
+              Type: string
+        Parameters:
+          classification: parquet
+          feature: bedrock-usage-insights
+          privacy_mode: operational_metadata_no_raw_content
+          projection.enabled: 'true'
+          projection.year.type: integer
+          projection.year.range: '2020,2100'
+          projection.year.digits: '4'
+          projection.month.type: integer
+          projection.month.range: '01,12'
+          projection.month.digits: '2'
+          projection.day.type: integer
+          projection.day.range: '01,31'
+          projection.day.digits: '2'
+          storage.location.template: !Join
+            - ''
+            - - 's3://'
+              - !Ref InsightsDataBucket
+              - '/insights/runs/year=${year}/month=${month}/day=${day}/'
+        PartitionKeys:
+          - Name: year
+            Type: string
+          - Name: month
+            Type: string
+          - Name: day
+            Type: string
+
+  InsightsResultsViewQuery:
+    Type: AWS::Athena::NamedQuery
+    DependsOn:
+      - InsightsResultsGlueTable
+      - InsightsRunsGlueTable
+    Properties:
+      Name: bedrock_usage_insights_results
+      Database: !Ref ExistingGlueDatabaseName
+      WorkGroup: !Ref ExistingAthenaWorkGroupName
+      Description: >-
+        Stable privacy-filtered Usage Insights results. Only completed,
+        committed runs inside the existing six-month source window are exposed.
+        Raw prompt and response columns are not part of this view.
+      QueryString: |
+        CREATE OR REPLACE VIEW "bedrock_usage_insights_results" AS
+        SELECT
+          r.source_request_id,
+          r.source_timestamp_utc,
+          r.result_timestamp_utc,
+          r.source_account,
+          r.source_region,
+          r.model_id,
+          r.operation,
+          r.analysis_run_id,
+          r.configuration_version,
+          r.analysis_logic_version,
+          r.primary_category,
+          r.secondary_categories,
+          r.category_scores,
+          r.confidence_band,
+          r.unknown_reason,
+          r.evidence_signal_names,
+          r.evidence_source_field_classes,
+          r.evidence_summaries,
+          r.evidence_counts,
+          r.primary_category_applicability,
+          r.secondary_categories_applicability,
+          r.scores_applicability,
+          r.confidence_band_applicability,
+          r.evidence_reference_applicability,
+          r.unknown_reason_applicability,
+          r.clarity_status,
+          r.clarity_score,
+          r.clarity_confidence_band,
+          r.specificity_status,
+          r.specificity_score,
+          r.specificity_confidence_band,
+          r.context_completeness_status,
+          r.context_completeness_score,
+          r.context_completeness_confidence_band,
+          r.task_definition_status,
+          r.task_definition_score,
+          r.task_definition_confidence_band,
+          r.output_constraints_status,
+          r.output_constraints_score,
+          r.output_constraints_confidence_band,
+          r.prompt_quality_limitation,
+          r.input_token_count,
+          r.output_token_count,
+          r.cache_read_token_count,
+          r.cache_write_token_count,
+          r.privacy_mode,
+          r.use_limitation,
+          r.schema_version,
+          r.publication_status,
+          r.year,
+          r.month,
+          r.day
+        FROM "bedrock_logs"."bedrock_usage_insights_results_data" r
+        INNER JOIN "bedrock_logs"."bedrock_usage_insights_runs_data" run
+          ON r.analysis_run_id = run.analysis_run_id
+        WHERE run.status = 'completed'
+          AND run.publication_status = 'committed'
+          AND r.publication_status = 'published'
+          AND r.source_timestamp_utc >= date_add('month', -6, current_timestamp)
+          AND (r.primary_category IS NULL OR r.primary_category IN (
+            'code_development', 'personal_work', 'potentially_wasteful_work',
+            'other', 'insufficient_evidence'
+          ))
+          AND (r.confidence_band IS NULL OR r.confidence_band IN ('low', 'medium', 'high'))
+          AND (r.unknown_reason IS NULL OR r.unknown_reason IN (
+            'out_of_scope', 'insufficient_evidence', 'conflicting_evidence',
+            'content_unavailable', 'content_redacted', 'parse_error', 'analysis_error'
+          ))
+          AND r.privacy_mode IN ('default_no_raw_content', 'approved_redacted_content');
+
+  InsightsAggregatesViewQuery:
+    Type: AWS::Athena::NamedQuery
+    DependsOn:
+      - InsightsAggregatesGlueTable
+      - InsightsRunsGlueTable
+    Properties:
+      Name: bedrock_usage_insights_aggregates
+      Database: !Ref ExistingGlueDatabaseName
+      WorkGroup: !Ref ExistingAthenaWorkGroupName
+      Description: >-
+        Stable aggregate-only Usage Insights view. Committed runs, six-month
+        source-window semantics, and minimum-group suppression are enforced.
+      QueryString: |
+        CREATE OR REPLACE VIEW "bedrock_usage_insights_aggregates" AS
+        SELECT
+          a.group_type,
+          a.group_key,
+          a.period_start,
+          a.period_end,
+          a.analyzed_record_count,
+          a.classified_record_count,
+          a.unknown_result_count,
+          a.not_assessed_count,
+          a.unknown_result_proportion,
+          a.input_token_total,
+          a.output_token_total,
+          a.category_distribution,
+          a.confidence_coverage,
+          a.prompt_quality_coverage,
+          a.estimated_or_allocated_cost,
+          a.cost_measure_label,
+          a.minimum_group_size,
+          a.distinct_qualifying_subject_count,
+          a.suppressed,
+          a.analysis_run_id,
+          a.configuration_version,
+          a.analysis_logic_version,
+          a.privacy_mode,
+          a.use_limitation,
+          a.schema_version,
+          a.publication_status,
+          a.year,
+          a.month,
+          a.day
+        FROM "bedrock_logs"."bedrock_usage_insights_aggregates_data" a
+        INNER JOIN "bedrock_logs"."bedrock_usage_insights_runs_data" run
+          ON a.analysis_run_id = run.analysis_run_id
+        WHERE run.status = 'completed'
+          AND run.publication_status = 'committed'
+          AND a.publication_status = 'published'
+          AND a.period_end >= date_add('month', -6, current_date)
+          AND a.minimum_group_size >= 5
+          AND a.suppressed = false
+          AND a.privacy_mode = 'aggregate_only_no_individual_subjects'
+          AND (a.cost_measure_label IS NULL OR a.cost_measure_label IN ('estimated', 'allocated'));
+
+  InsightsRunsViewQuery:
+    Type: AWS::Athena::NamedQuery
+    DependsOn:
+      - InsightsRunsGlueTable
+    Properties:
+      Name: bedrock_usage_insights_runs
+      Database: !Ref ExistingGlueDatabaseName
+      WorkGroup: !Ref ExistingAthenaWorkGroupName
+      Description: >-
+        Stable operational Usage Insights run view. Includes bounded,
+        content-free metadata for all run outcomes; it never exposes raw
+        prompt or response content.
+      QueryString: |
+        CREATE OR REPLACE VIEW "bedrock_usage_insights_runs" AS
+        SELECT
+          analysis_run_id,
+          status,
+          source_scope_accounts,
+          source_scope_regions,
+          source_scope_models,
+          source_scope_operations,
+          requested_start_date,
+          requested_end_date,
+          source_availability_window_start,
+          source_availability_window_end,
+          configuration_version,
+          analysis_logic_version,
+          started_at,
+          ended_at,
+          output_location,
+          query_execution_ids,
+          input_record_count,
+          classified_record_count,
+          unknown_result_count,
+          not_assessed_count,
+          processing_error_count,
+          redaction_event_count,
+          suppressed_group_count,
+          dashboard_publication_requested,
+          dashboard_publication_approved,
+          transmission_requested,
+          publication_status,
+          privacy_mode,
+          schema_version,
+          use_limitation,
+          year,
+          month,
+          day
+        FROM "bedrock_logs"."bedrock_usage_insights_runs_data"
+        WHERE status IN ('pending', 'running', 'partial', 'completed', 'failed', 'cancelled');
+
+  InsightsCommittedRunsViewQuery:
+    Type: AWS::Athena::NamedQuery
+    DependsOn:
+      - InsightsRunsGlueTable
+    Properties:
+      Name: bedrock_usage_insights_committed_runs
+      Database: !Ref ExistingGlueDatabaseName
+      WorkGroup: !Ref ExistingAthenaWorkGroupName
+      Description: >-
+        Committed-run contract used by result and aggregate consumers. A run
+        is committed only after publication validation and completion.
+      QueryString: |
+        CREATE OR REPLACE VIEW "bedrock_usage_insights_committed_runs" AS
+        SELECT
+          analysis_run_id,
+          configuration_version,
+          analysis_logic_version,
+          started_at,
+          ended_at,
+          source_availability_window_start,
+          source_availability_window_end,
+          input_record_count,
+          classified_record_count,
+          unknown_result_count,
+          not_assessed_count,
+          processing_error_count,
+          redaction_event_count,
+          suppressed_group_count,
+          privacy_mode,
+          schema_version,
+          use_limitation,
+          year,
+          month,
+          day
+        FROM "bedrock_logs"."bedrock_usage_insights_runs_data"
+        WHERE status = 'completed'
+          AND publication_status = 'committed'
+          AND (source_availability_window_end IS NULL
+            OR source_availability_window_end >= date_add('month', -6, current_date));
+
+  # This parameter is a bootstrap record only. Accepted configurations remain
+  # immutable, versioned records in InsightConfigurationTable.
+  InsightsDisabledConfiguration:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /bedrock/usage-insights/${AWS::StackName}/disabled-default
+      Type: String
+      Tier: Standard
+      Description: Disabled-by-default Usage Insights configuration baseline
+      Value: !Sub |
+        {
+          "configuration_version": "bootstrap-disabled-v1",
+          "enabled": ${FeatureEnabled},
+          "content_analysis_enabled": ${ContentAnalysisEnabled},
+          "dashboard_publication": "${DashboardPublicationMode}",
+          "minimum_group_size": ${MinimumGroupSize},
+          "retention_days": ${DerivedDataRetentionDays},
+          "source_database": "${ExistingGlueDatabaseName}",
+          "source_view": "${ExistingSourceViewName}",
+          "workgroup": "${ExistingAthenaWorkGroupName}",
+          "content_approval_reference": "${ContentApprovalReference}",
+          "content_approved_account_id": "${ContentApprovedAccountId}",
+          "content_approved_region": "${ContentApprovedRegion}"
+        }
+      Tags:
+        FinOps: bedrock-usage-insights
+        FeatureState: !Ref FeatureEnabled
+
+  # ---------------------------------------------------------------------------
+  # Least-privilege feature roles. The source view, source bucket, and
+  # existing workgroup are read-only dependencies. No existing QuickSight role
+  # is changed; the dashboard role below is feature-owned and aggregate-only.
+  # ---------------------------------------------------------------------------
+  InsightsAnalysisRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub bedrock-usage-insights-analysis-${AWS::AccountId}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: ReadExistingBedrockSource
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadAthenaWorkGroup
+                Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetWorkGroup
+                Resource: !Sub arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${ExistingAthenaWorkGroupName}
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              - Sid: ReadAthenaQueryResults
+                Effect: Allow
+                Action:
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              - Sid: ReadExistingGlueView
+                Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetTable
+                  - glue:GetTableVersion
+                  - glue:GetTableVersions
+                Resource:
+                  - !Sub arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog
+                  - !Sub arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${ExistingGlueDatabaseName}
+                  - !Sub arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${ExistingGlueDatabaseName}/${ExistingSourceViewName}
+              - Sid: ReadExistingDataLake
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::bedrock-firehose-lake-${AWS::AccountId}
+                  - !Sub arn:aws:s3:::bedrock-firehose-lake-${AWS::AccountId}/data/*
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - data/*
+              - Sid: DecryptExistingDataLake
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/bedrock-firehose-data-lake-key
+        - PolicyName: WriteFeatureOutputsAndRunState
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: WriteFeatureOwnedObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:AbortMultipartUpload
+                Resource: !Sub ${InsightsDataBucket.Arn}/insights/*
+              - Sid: ListFeatureOwnedObjects
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt InsightsDataBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - insights/*
+              - Sid: ManageRunRecords
+                Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource: !GetAtt AnalysisRunTable.Arn
+              - Sid: ReadAcceptedConfigurations
+                Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource: !GetAtt InsightConfigurationTable.Arn
+              - Sid: UseFeatureKey
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt InsightsKmsKey.Arn
+        - PolicyName: WriteFeatureLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub ${InsightsLogGroup.Arn}:*
+      Tags:
+        - Key: FinOps
+          Value: bedrock-usage-insights
+        - Key: AccessBoundary
+          Value: feature-owned
+
+  InsightsContentRole:
+    Type: AWS::IAM::Role
+    Condition: ContentAnalysisEnabledCondition
+    Metadata:
+      ApprovalRequirements:
+        - ContentApprovalReference
+        - ContentApprovedAccountId
+        - ContentApprovedRegion
+        - ExplicitRedactionPolicy
+    Properties:
+      RoleName: !Sub bedrock-usage-insights-content-${AWS::AccountId}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: ReadApprovedSourceContent
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadSourceThroughExistingWorkGroup
+                Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetWorkGroup
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              - Sid: ReadSourceViewMetadata
+                Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetTable
+                  - glue:GetTableVersion
+                  - glue:GetTableVersions
+                Resource:
+                  - !Sub arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog
+                  - !Sub arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${ExistingGlueDatabaseName}
+                  - !Sub arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${ExistingGlueDatabaseName}/${ExistingSourceViewName}
+              - Sid: ReadSourceContentObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::bedrock-firehose-lake-${AWS::AccountId}
+                  - !Sub arn:aws:s3:::bedrock-firehose-lake-${AWS::AccountId}/data/*
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - data/*
+              - Sid: DecryptSourceContent
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/bedrock-firehose-data-lake-key
+      Tags:
+        - Key: FinOps
+          Value: bedrock-usage-insights
+        - Key: AccessBoundary
+          Value: approved-content-only
+
+  InsightsDashboardRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub bedrock-usage-insights-dashboard-${AWS::AccountId}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: quicksight.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: ReadAggregateInsightsOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadAggregateObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt InsightsDataBucket.Arn
+                  - !Sub ${InsightsDataBucket.Arn}/insights/runs/*/published/aggregates/*
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - insights/runs/*/published/aggregates/*
+              - Sid: ReadFeatureEncryptionKey
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource: !GetAtt InsightsKmsKey.Arn
+              - Sid: QueryExistingWorkGroupReadOnly
+                Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetWorkGroup
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              - Sid: ReadFeatureCatalogDefinitions
+                Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetTable
+                  - glue:GetTables
+                  - glue:GetPartition
+                  - glue:GetPartitions
+                Resource:
+                  - !Sub arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog
+                  - !Sub arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${ExistingGlueDatabaseName}
+                  - !Sub arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${ExistingGlueDatabaseName}/bedrock_usage_insights_aggregates
+      Tags:
+        - Key: FinOps
+          Value: bedrock-usage-insights
+        - Key: Exposure
+          Value: aggregate-only
+
+  # ---------------------------------------------------------------------------
+  # Operational logs, metric filters, and alarms. These resources observe the
+  # feature only and cannot mutate the source data lake or existing dashboard.
+  # ---------------------------------------------------------------------------
+  InsightsLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: /aws/bedrock/usage-insights
+      RetentionInDays: !Ref DerivedDataRetentionDays
+      KmsKeyId: !GetAtt InsightsKmsKey.Arn
+      Tags:
+        - Key: FinOps
+          Value: bedrock-usage-insights
+
+  InsightsErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref InsightsLogGroup
+      FilterPattern: '{ $.level = "ERROR" }'
+      MetricTransformations:
+        - MetricNamespace: Bedrock/UsageInsights
+          MetricName: AnalysisErrors
+          MetricValue: '1'
+          DefaultValue: 0
+
+  InsightsUnknownMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref InsightsLogGroup
+      FilterPattern: '{ $.event = "unknown_result" }'
+      MetricTransformations:
+        - MetricNamespace: Bedrock/UsageInsights
+          MetricName: UnknownResults
+          MetricValue: '1'
+          DefaultValue: 0
+
+  InsightsPublicationFailureMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref InsightsLogGroup
+      FilterPattern: '{ $.event = "publication_failed" }'
+      MetricTransformations:
+        - MetricNamespace: Bedrock/UsageInsights
+          MetricName: PublicationFailures
+          MetricValue: '1'
+          DefaultValue: 0
+
+  InsightsErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub bedrock-usage-insights-errors-${AWS::AccountId}
+      AlarmDescription: Usage Insights analysis errors were recorded.
+      Namespace: Bedrock/UsageInsights
+      MetricName: AnalysisErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref InsightsAlarmTopic
+      TreatMissingData: notBreaching
+
+  InsightsUnknownRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub bedrock-usage-insights-unknown-results-${AWS::AccountId}
+      AlarmDescription: Usage Insights unknown-result volume requires review.
+      Namespace: Bedrock/UsageInsights
+      MetricName: UnknownResults
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref InsightsAlarmTopic
+      TreatMissingData: notBreaching
+
+  InsightsPublicationFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub bedrock-usage-insights-publication-failures-${AWS::AccountId}
+      AlarmDescription: Usage Insights publication failed; source data remains unchanged.
+      Namespace: Bedrock/UsageInsights
+      MetricName: PublicationFailures
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref InsightsAlarmTopic
+      TreatMissingData: notBreaching
+
+Outputs:
+  FeatureEnabled:
+    Description: Runtime enablement state for the optional feature.
+    Value: !Ref FeatureEnabled
+
+  ContentAnalysisEnabled:
+    Description: Content analysis remains explicitly disabled by default.
+    Value: !Ref ContentAnalysisEnabled
+
+  DashboardPublicationMode:
+    Description: Dashboard output is aggregate-only by default.
+    Value: !Ref DashboardPublicationMode
+
+  MinimumGroupSize:
+    Description: Effective minimum distinct qualifying-subject count for publication.
+    Value: !Ref MinimumGroupSize
+
+  InsightsDataBucketName:
+    Description: Feature-owned encrypted bucket for staged and published Insights objects.
+    Value: !Ref InsightsDataBucket
+
+  InsightConfigurationTableName:
+    Description: Feature-owned immutable configuration-version store.
+    Value: !Ref InsightConfigurationTable
+
+  AnalysisRunTableName:
+    Description: Feature-owned Analysis_Run control store.
+    Value: !Ref AnalysisRunTable
+
+  InsightsAnalysisRoleArn:
+    Description: Least-privilege role for deterministic analysis and feature-owned publication.
+    Value: !GetAtt InsightsAnalysisRole.Arn
+
+  InsightsDashboardRoleArn:
+    Description: Feature-owned aggregate-only QuickSight role; existing QuickSight role is unchanged.
+    Value: !GetAtt InsightsDashboardRole.Arn
+
+  InsightsLogGroupName:
+    Description: Feature-owned operational log group.
+    Value: !Ref InsightsLogGroup
+
+  SourceContract:
+    Description: Read-only source database, view, and Athena workgroup contract.
+    Value: !Sub ${ExistingGlueDatabaseName}.${ExistingSourceViewName}@${ExistingAthenaWorkGroupName}
+
+  InsightsResultsViewName:
+    Description: Stable privacy-filtered non-aggregate results view.
+    Value: bedrock_usage_insights_results
+
+  InsightsAggregatesViewName:
+    Description: Stable aggregate-only results view with suppression and committed-run filtering.
+    Value: bedrock_usage_insights_aggregates
+
+  InsightsRunsViewName:
+    Description: Stable content-free operational run view.
+    Value: bedrock_usage_insights_runs
+
+  InsightsCommittedRunsViewName:
+    Description: Stable view of completed, validated, committed runs.
+    Value: bedrock_usage_insights_committed_runs
