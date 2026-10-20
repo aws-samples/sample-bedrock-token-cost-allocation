@@ -2,7 +2,7 @@
 
 This sample shows how to attribute Amazon Bedrock token usage and estimated costs to teams, projects, applications, or business units using Bedrock model invocation logs and a centralized data lake.
 
-> **Recommended architecture:** `bedrock-firehose-data-lake.yaml` uses CloudWatch Logs, a cross-account CloudWatch Logs destination, Kinesis Data Firehose, Lambda processing, S3 Parquet, Glue Data Catalog, Athena, and QuickSight. The older S3 replication pipeline is preserved for reference only.
+> **Recommended architecture:** `bedrock-firehose-data-lake.yaml` uses CloudWatch Logs, a cross-account CloudWatch Logs destination, Amazon Data Firehose with native CloudWatch Logs processing, S3 Parquet, Glue Data Catalog, Athena, and QuickSight. The older S3 replication pipeline is preserved for reference only.
 
 ## What it does
 
@@ -25,20 +25,24 @@ Source account(s)
                                 ▼
 Central account
   CloudWatch Logs destination → Firehose DirectPut stream
-                                → Lambda envelope unpacker
-                                → JSON-to-Parquet conversion
+                                → native CWL decompression and message extraction
+  Glue Data Catalog schema ────→ JSON-to-Parquet conversion
                                 → encrypted S3 data lake
-                                → Glue Data Catalog
                                 → Athena
                                 → QuickSight SPICE dashboard
 
 AWS CUR ───────────────────────► Athena cost-allocation queries
 ```
 
+The destination has one target: the Firehose stream. Firehose performs decompression,
+message extraction, and Parquet conversion as one delivery pipeline; there is no Lambda
+branch and no duplicate Firehose submission. Glue stores the conversion and query schema.
+Invocation records do not flow through a Glue ETL job or crawler.
+
 ## Prerequisites
 
 - AWS CLI configured with credentials for the central account and every source account.
-- Permissions to create and update the CloudFormation, IAM, CloudWatch Logs, Firehose, Lambda, S3, Glue, Athena, KMS, and Bedrock logging resources used by the templates.
+- Permissions to create and update the CloudFormation, IAM, CloudWatch Logs, Firehose, S3, Glue, Athena, KMS, and Bedrock logging resources used by the templates.
 - At least one source account that runs Bedrock workloads.
 - One central account that owns the Firehose stream, S3 data lake, Glue catalog, Athena workgroup, and optional QuickSight resources.
 - Python 3 with `boto3` installed if you want to run `scripts/test_bedrock_invocation.py`.
@@ -105,9 +109,8 @@ echo "$QUICKSIGHT_ROLE_ARN"
 
 The central stack creates these important resources:
 
-- `bedrock-invocations-v2`: Firehose DirectPut delivery stream.
+- `bedrock-invocations-v2`: Firehose DirectPut stream with native CloudWatch Logs decompression and message extraction.
 - `bedrock-firehose-lake-<account-id>`: encrypted S3 data lake.
-- `bedrock-cwl-unpack`: Lambda processor for CloudWatch Logs envelopes.
 - `bedrock_logs.bedrock_invocations`: Glue table for Firehose Parquet data.
 - `bedrock-analytics`: Athena workgroup.
 - `bedrock-firehose-destination-v2`: cross-account CloudWatch Logs destination.
@@ -190,6 +193,21 @@ aws s3 ls "s3://bedrock-firehose-lake-${CENTRAL_ACCOUNT_ID}/errors/" \
   --recursive \
   --profile $CENTRAL_PROFILE
 ```
+
+### Scaling and buffering
+
+The ingestion path does not invoke Lambda, so linked-account growth does not consume the
+central account's Lambda concurrency. An SQS queue is not required and cannot be used as a
+direct CloudWatch Logs subscription target. Firehose provides the delivery buffer and native
+CloudWatch Logs preprocessing.
+
+In `us-east-1`, a Direct PUT Firehose stream starts with a 5 MiB/second throughput quota and
+[automatically scales when it is throttled](https://docs.aws.amazon.com/firehose/latest/dev/limits.html).
+Request a quota increase before a known large burst. CloudWatch Logs retries retryable delivery
+failures for up to 24 hours, but subscriptions use at-least-once delivery, so consumers must allow
+for occasional duplicates. See [CloudWatch Logs subscriptions](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Subscriptions.html).
+The stack's Firehose freshness and delivery-success alarms indicate sustained backpressure or
+failed delivery.
 
 ### Step 5 — Create the Athena view
 
@@ -336,8 +354,8 @@ The Firehose pipeline creates `bedrock_logs.bedrock_invocations` with these main
 
 - `schematype`, `schemaversion`, and `timestamp`
 - `accountid`, `region`, `requestid`, `operation`, and `modelid`
-- `identity_arn` and nested `requestmetadata`
-- Nested `input` and `output` structures containing token counts and request/response content
+- Nested `identity.arn` plus the legacy `identity_arn` compatibility column
+- Nested `requestmetadata`, `input`, and `output` structures containing request metadata, token counts, and request/response content
 - Date partition columns: `year`, `month`, and `day`
 
 The flattened `bedrock_invocations_view` extracts input/output token usage, cache token counts, stop reason, prompt preview, and response preview. Prompt and response fields may contain sensitive data and should be protected accordingly.
@@ -368,7 +386,7 @@ The Firehose architecture does not require source-account S3 buckets, replicatio
 - Source CloudWatch Logs are encrypted with a source-account KMS key.
 - The central Firehose data lake is encrypted with a customer managed KMS key with rotation enabled.
 - S3 public access is blocked and non-HTTPS access is denied.
-- Firehose, CloudWatch Logs, Athena, Glue, Lambda, and QuickSight use separate least-privilege roles.
+- Firehose, CloudWatch Logs, Athena, Glue, and QuickSight use separate least-privilege roles.
 - The QuickSight datasource role is scoped to the central data lake and its KMS key.
 - S3 buckets use retention policies so a stack update does not delete stored logs.
 - The flattened view can expose prompt and response content; restrict access or remove those columns if the data is sensitive.

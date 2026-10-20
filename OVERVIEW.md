@@ -68,7 +68,8 @@ Bedrock invocation
       subscription filter                 ▼
                                     Firehose (DirectPut)
                                           │
-                                    Lambda: unpack CWL envelope
+                                    Native CWL decompression
+                                    + message extraction
                                           │
                                     Inline JSON ▶ Parquet (Glue schema)
                                           │
@@ -82,9 +83,11 @@ Bedrock invocation
 
 Bedrock writes model invocation logs to CloudWatch Logs in each source account. A subscription
 filter forwards that log group to a cross-account CloudWatch Logs destination in the central
-account, which fans into a Firehose DirectPut stream. Firehose invokes a Lambda to unpack the CWL
-envelope, converts the JSON to Snappy Parquet inline using a Glue table schema, and writes to an
-encrypted S3 data lake partitioned by date.
+account, which feeds a Firehose DirectPut stream. Firehose natively decompresses each CloudWatch
+Logs envelope, extracts its message records, converts the JSON to Snappy Parquet using a Glue table
+schema, and writes to an encrypted S3 data lake partitioned by date. The subscription filter only
+forwards records whose documented `schemaType` is `ModelInvocationLog`, which removes setup notices
+before they reach Parquet conversion.
 
 ---
 
@@ -93,13 +96,13 @@ encrypted S3 data lake partitioned by date.
 | Path | Purpose |
 |---|---|
 | `bedrock-logging.yaml` | **Source account stack.** Log group, KMS key, Bedrock logging role, subscription filter. |
-| `bedrock-firehose-data-lake.yaml` | **Central account stack.** Buckets, KMS, Firehose, unpack Lambda, Glue catalog, Athena workgroup, alarms, QuickSight role. |
+| `bedrock-firehose-data-lake.yaml` | **Central account stack.** Buckets, KMS, Firehose, Glue catalog, Athena workgroup, alarms, QuickSight role. |
 | `Bedrock Data Lake SQL.md` | Athena query reference, including the CUR join patterns. |
 | `Bedrock-Invocation-Usage-Dashboard.yaml` | CID-format QuickSight dashboard definition. |
 | `deploy.md` | Step-by-step deployment commands. |
 | `s3-security.guard` | cfn-guard rules enforcing bucket and IAM posture. |
 | `tests/test_cfn_properties.py` | Template security and configuration assertions (pytest + Hypothesis). |
-| `tests/test_cwl_unpack_lambda.py` | Unit tests for the inline Lambda, extracted from the YAML. |
+| `tests/test_firehose_processing.py` | Tests for native CloudWatch Logs decompression, message extraction, filtering, and schema compatibility. |
 | `integration-tests/README.md` | End-to-end validation procedure. |
 | `.github/workflows/main.yml` | CI: cfn-lint, cfn_nag, cfn-guard, pytest. |
 
@@ -117,7 +120,8 @@ Small and self-contained. Takes one parameter, `CentralCWLDestinationArn`.
   condition. This is the role you supply when enabling Bedrock model invocation logging.
 - **`CWLSubscriptionFilterRole`** — required specifically because the central destination policy is
   org-scoped rather than account-scoped. CloudWatch Logs assumes it to validate the subscription.
-- **`BedrockCWLSubscriptionFilter`** — empty filter pattern, so all events forward.
+- **`BedrockCWLSubscriptionFilter`** — forwards only JSON records with
+  `schemaType=ModelInvocationLog`, excluding setup notices before Parquet conversion.
 
 ---
 
@@ -135,46 +139,49 @@ Both deny non-HTTPS via bucket policy, block all public access, and retain on st
 Versioning is deliberately off on the data lake — Firehose only ever writes new objects.
 
 **Catalog.** Glue database `bedrock_logs`, table `bedrock_invocations`, with **Athena partition
-projection** on `year`/`month`/`day` only. `accountid` and `region` are regular Parquet columns
-rather than partition keys. That's a deliberate tradeoff: far fewer partitions to manage, at the
-cost of not being able to partition-prune by account.
+projection** on `year`/`month`/`day` only. The Glue table supplies the schema for Firehose's Parquet
+conversion and Athena queries; records do not pass through a Glue job or crawler. `accountid` and
+`region` are regular Parquet columns rather than partition keys. That's a deliberate tradeoff: far
+fewer partitions to manage, at the cost of not being able to partition-prune by account.
 
-**Ingestion.** Firehose stream `bedrock-invocations-v2`, DirectPut, 128 MB / 60s buffering.
-`DataFormatConversionConfiguration` reads the Glue schema to drive the Parquet conversion. Dynamic
-partitioning is off — the date prefix comes from Firehose timestamp expressions instead, which is
-cheaper and sufficient given date-only partitioning.
+**Ingestion.** Firehose stream `bedrock-invocations-v2`, DirectPut, 128 MB / 60s buffering. Its
+native `Decompression` and `CloudWatchLogProcessing` processors unpack the gzip CloudWatch Logs
+envelope and emit each message. `DataFormatConversionConfiguration` reads the Glue schema to drive
+the Parquet conversion. Dynamic partitioning is off — the date prefix comes from Firehose timestamp
+expressions instead, which is cheaper and sufficient given date-only partitioning.
 
 **Cross-account entry point.** `CWLFirehoseDestination` carries a `Principal: "*"` policy gated by
 `aws:PrincipalOrgID`. This is what lets any account in the org subscribe without the central
 template enumerating account IDs.
 
-**Access.** Four separate roles, each scoped to one job: `bedrock-firehose-role` (S3 write, Glue
-schema read, KMS, error logging), `bedrock-cwl-destination-role` (Firehose PutRecord only), the
-Lambda execution role, and `BedrockQuickSightDataSourceRole` (Athena, Glue, S3 read, KMS decrypt).
+**Access.** Three separate roles, each scoped to one job: `bedrock-firehose-role` (S3 write, Glue
+schema read, KMS, error logging), `bedrock-cwl-destination-role` (Firehose PutRecord only), and
+`BedrockQuickSightDataSourceRole` (Athena, Glue, S3 read, KMS decrypt).
 
 **Observability.** Alarms on `DeliveryToS3.DataFreshness` (>5 min) and `DeliveryToS3.Success` (<95%
 for two periods), both publishing to the `bedrock-firehose-alarms` SNS topic.
 
 ---
 
-## The unpack Lambda
+## Native Firehose preprocessing
 
-Defined inline in the central template as `CWLUnpackFunction` (Python 3.12, 256 MB, 60s timeout).
+The stream uses Firehose's native
+[`Decompression`](https://docs.aws.amazon.com/firehose/latest/dev/writing-with-cloudwatch-logs-decompression.html)
+processor for CloudWatch Logs gzip envelopes, followed by `CloudWatchLogProcessing` with
+[`DataMessageExtraction=true`](https://docs.aws.amazon.com/firehose/latest/dev/Message_extraction.html).
+This emits the content of each `logEvents[].message` record before JSON-to-Parquet conversion.
 
-CloudWatch subscription filters deliver records as `base64(gzip(JSON))` batches, which Firehose
-can't feed to the Parquet converter directly. The handler:
+The source subscription filter matches `{ $.schemaType = "ModelInvocationLog" }`. Amazon Bedrock
+[documents this value for every invocation record](https://docs.aws.amazon.com/bedrock/latest/userguide/model-invocation-logging.html),
+so the filter excludes plain-text setup notices that would otherwise fail Parquet parsing. The
+Glue schema stores the native nested `identity.arn` field and retains the former `identity_arn`
+column for existing Parquet objects. The Athena view
+uses `COALESCE(identity_arn, identity.arn)`, keeping historical and new records query-compatible.
 
-1. Decodes the envelope and drops `CONTROL_MESSAGE` heartbeats.
-2. Skips any log message that isn't a JSON object. **This guard matters** — CloudWatch emits
-   plain-text notices such as "Permissions are correctly set for Amazon Bedrock logs" when logging
-   is enabled, and forwarding those fails Parquet conversion with
-   `DataFormatConversion.ParseError`.
-3. Flattens nested `identity.arn` to a top-level `identity_arn` to match the Glue schema.
-4. Rejoins the surviving events as newline-delimited JSON, since Firehose expects one record per
-   invocation.
-
-Records that yield no usable lines are returned with `result: 'Dropped'` rather than failing the
-batch. Record IDs are preserved throughout — `tests/test_cwl_unpack_lambda.py` asserts this.
+This removes Lambda concurrency and retry limits from ingestion. SQS is neither required nor a
+supported direct CloudWatch Logs subscription destination. If sustained traffic approaches the
+Firehose quota, increase that quota; if the design later needs explicit stream capacity or more
+than Firehose's 24-hour DirectPut retention, evaluate Kinesis Data Streams rather than SQS.
 
 ---
 
@@ -231,9 +238,10 @@ CloudFormation intrinsic tags, then asserts:
 - All buckets carry `DeletionPolicy: Retain`.
 - No Glue crawler, job, or trigger exists — the design deliberately avoids them.
 - Required stack outputs are present.
-
-`tests/test_cwl_unpack_lambda.py` extracts the Lambda source directly from the template YAML and
-exercises the drop paths, so the tests can't drift from the deployed code.
+- Native Firehose `Decompression` and `CloudWatchLogProcessing` processors are configured in order.
+- The source subscription forwards only `ModelInvocationLog` records.
+- The Glue schema and Athena view remain compatible with both the former flattened identity field
+  and the native nested identity object.
 
 `s3-security.guard` encodes the same posture as cfn-guard rules for CI enforcement.
 

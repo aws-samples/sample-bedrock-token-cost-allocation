@@ -37,10 +37,10 @@
         <mxCell id="cwl-destination" parent="central-account" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" value="Amazon CloudWatch&#xa;Logs Destination" vertex="1">
           <mxGeometry height="60" width="140" x="40" y="80" as="geometry" />
         </mxCell>
-        <mxCell id="lambda-unpack" parent="central-account" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#F78E04;gradientDirection=north;fillColor=#D05C17;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" value="AWS Lambda&#xa;(CWL Unpack)" vertex="1">
-          <mxGeometry height="78" width="78" x="250" y="71" as="geometry" />
+        <mxCell id="native-processing" parent="central-account" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1f3e1;strokeColor=#82b366;fontSize=11;" value="Native Firehose processing&#xa;• Decompress CWL gzip&#xa;• Extract message records&#xa;• Convert JSON to Parquet" vertex="1">
+          <mxGeometry height="105" width="240" x="230" y="65" as="geometry" />
         </mxCell>
-        <mxCell id="firehose" parent="central-account" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#945DF2;gradientDirection=north;fillColor=#5A30B5;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.kinesis_data_firehose;" value="Amazon Kinesis&#xa;Data Firehose" vertex="1">
+        <mxCell id="firehose" parent="central-account" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#945DF2;gradientDirection=north;fillColor=#5A30B5;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.kinesis_data_firehose;" value="Amazon Data Firehose&#xa;(decompress, extract,&#xa;JSON to Parquet)" vertex="1">
           <mxGeometry height="78" width="78" x="71" y="221" as="geometry" />
         </mxCell>
         <mxCell id="glue" parent="central-account" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#4AB29A;gradientDirection=north;fillColor=#116D5B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.glue;" value="AWS Glue&#xa;Data Catalog" vertex="1">
@@ -67,14 +67,17 @@
         <mxCell id="kms-lake" parent="central-account" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.kms_key;" value="AWS KMS Key&#xa;(Data Lake)" vertex="1">
           <mxGeometry height="58" width="48" x="370" y="391" as="geometry" />
         </mxCell>
-        <mxCell id="arrow5" edge="1" parent="central-account" source="cwl-destination" target="lambda-unpack">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
         <mxCell id="arrow6" edge="1" parent="central-account" source="cwl-destination" target="firehose">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="arrow7" edge="1" parent="central-account" source="lambda-unpack" target="firehose">
+        <mxCell id="arrow7" edge="1" parent="central-account" source="native-processing" target="firehose" style="dashed=1;endArrow=classic;html=1;">
           <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow8" edge="1" parent="central-account" source="glue" target="firehose" style="dashed=1;endArrow=classic;html=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="schema-label" connectable="0" parent="arrow8" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=10;fontStyle=2" value="Parquet schema" vertex="1">
+          <mxGeometry relative="1" x="0" y="-1" as="geometry" />
         </mxCell>
         <mxCell id="arrow9" edge="1" parent="central-account" source="glue" target="glue-table">
           <mxGeometry relative="1" as="geometry" />

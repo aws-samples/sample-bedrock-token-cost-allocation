@@ -21,8 +21,8 @@ Joins Bedrock invocation logs to CUR on `identity_arn` matched against `line_ite
 ```sql
 SELECT
     b.accountid,
-    b.identity_arn,
-    regexp_replace(b.identity_arn, '/[^/]+$', '') AS identity_role_arn,
+    COALESCE(b.identity_arn, b.identity.arn) AS identity_arn,
+    regexp_replace(COALESCE(b.identity_arn, b.identity.arn), '/[^/]+$', '') AS identity_role_arn,
     c.line_item_iam_principal,
     tags,
     -- Add your activated CUR tag columns here, e.g.:
@@ -40,7 +40,7 @@ JOIN cid_data_export.cur2 c
     ON  b.accountid = c.line_item_usage_account_id
     AND b.modelid    = c.line_item_resource_id
     -- Strip STS session suffix so assumed-role/my-role/session matches role/my-role in CUR
-    AND regexp_replace(b.identity_arn, '/[^/]+$', '') = regexp_replace(c.line_item_iam_principal, '/[^/]+$', '')
+    AND regexp_replace(COALESCE(b.identity_arn, b.identity.arn), '/[^/]+$', '') = regexp_replace(c.line_item_iam_principal, '/[^/]+$', '')
     AND date_trunc('hour', from_iso8601_timestamp(b.timestamp)) >= c.line_item_usage_start_date
     AND date_trunc('hour', from_iso8601_timestamp(b.timestamp))  < c.line_item_usage_end_date
 WHERE b.modelid LIKE '%infer%'
@@ -48,8 +48,8 @@ WHERE b.modelid LIKE '%infer%'
   AND c.line_item_iam_principal IS NOT NULL
 GROUP BY
     b.accountid,
-    b.identity_arn,
-    regexp_replace(b.identity_arn, '/[^/]+$', ''),
+    COALESCE(b.identity_arn, b.identity.arn),
+    regexp_replace(COALESCE(b.identity_arn, b.identity.arn), '/[^/]+$', ''),
     c.line_item_iam_principal,
     -- Add your tag columns to GROUP BY to match the SELECT above
     b.modelid,

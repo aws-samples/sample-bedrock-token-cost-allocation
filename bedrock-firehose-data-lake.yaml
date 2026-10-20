@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Bedrock Firehose Data Lake - Firehose delivery stream with inline JSON-to-Parquet conversion, S3 data lake bucket, Glue schema table with partition projection, Athena workgroup, and organization-scoped CloudWatch Logs destination'
+Description: 'Bedrock Firehose Data Lake - native CloudWatch Logs decompression, inline JSON-to-Parquet conversion, S3 data lake bucket, Glue schema table with partition projection, Athena workgroup, and organization-scoped CloudWatch Logs destination'
 
 Parameters:
   OrganizationId:
@@ -39,6 +39,20 @@ Resources:
             Condition:
               StringEquals:
                 'aws:SourceAccount': !Ref AWS::AccountId
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            Condition:
+              ArnLike:
+                'kms:EncryptionContext:aws:logs:arn': !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/bedrock-invocations'
       Tags:
         - Key: FinOps
           Value: bedrock-firehose-data-lake
@@ -416,8 +430,13 @@ Resources:
               Type: string
             - Name: modelid
               Type: string
+            # Keep the former flattened column for existing Parquet objects written
+            # by versions of the pipeline that used the unpack Lambda.
             - Name: identity_arn
               Type: string
+            # Native Firehose message extraction preserves the Bedrock identity object.
+            - Name: identity
+              Type: 'struct<arn:string>'
             - Name: requestmetadata
               Type: map<string,string>
             - Name: input
@@ -574,8 +593,12 @@ Resources:
           requestid,
           operation,
           modelid,
-          identity_arn,
-          IF((identity_arn LIKE '%:assumed-role/%'), element_at(split(identity_arn, '/'), -1), identity_arn) AS identity,
+          COALESCE(identity_arn, identity.arn) AS identity_arn,
+          IF(
+            (COALESCE(identity_arn, identity.arn) LIKE '%:assumed-role/%'),
+            element_at(split(COALESCE(identity_arn, identity.arn), '/'), -1),
+            COALESCE(identity_arn, identity.arn)
+          ) AS identity,
           JSON_FORMAT(CAST(requestmetadata AS JSON)) AS requestmetadata,
           year,
           month,
@@ -623,132 +646,15 @@ Resources:
     Properties:
       LogGroupName: /aws/kinesisfirehose/bedrock-invocations
       RetentionInDays: 30
+      KmsKeyId: !GetAtt DataLakeKmsKey.Arn
       Tags:
         - Key: FinOps
           Value: bedrock-firehose-data-lake
 
   # ---------------------------------------------------------------------------
-  # Lambda function: unpacks CloudWatch Logs gzip+base64 envelope
-  # CWL subscription filters deliver records as base64(gzip(JSON)) — Firehose
-  # can't run JQ on that directly. This Lambda decodes each CWL record,
-  # extracts the individual log events, and returns them as plain JSON lines.
-  # ---------------------------------------------------------------------------
-  CWLUnpackLambdaRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: bedrock-cwl-unpack-lambda-role
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Tags:
-        - Key: FinOps
-          Value: bedrock-firehose-data-lake
-
-  CWLUnpackFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: bedrock-cwl-unpack
-      Runtime: python3.12
-      Handler: index.handler
-      Role: !GetAtt CWLUnpackLambdaRole.Arn
-      Timeout: 60
-      MemorySize: 256
-      Code:
-        ZipFile: |
-          import base64, gzip, json
-
-          def handler(event, context):
-              output = []
-              for record in event['records']:
-                  # Decode the CWL envelope (base64 -> gzip -> JSON)
-                  compressed = base64.b64decode(record['data'])
-                  try:
-                      payload = json.loads(gzip.decompress(compressed).decode('utf-8'))
-                  except Exception:
-                      # Not a CWL envelope — pass through as-is
-                      output.append({'recordId': record['recordId'],
-                                     'result': 'Ok',
-                                     'data': record['data']})
-                      continue
-
-                  # messageType CONTROL_MESSAGE: skip (heartbeat)
-                  if payload.get('messageType') == 'CONTROL_MESSAGE':
-                      output.append({'recordId': record['recordId'],
-                                     'result': 'Dropped',
-                                     'data': record['data']})
-                      continue
-
-                  # Extract individual log events from the CWL batch
-                  lines = []
-                  for evt in payload.get('logEvents', []):
-                      msg = evt.get('message', '')
-                      # Bedrock log messages are JSON objects. Skip anything else:
-                      # CloudWatch Logs emits plain-text notices such as
-                      # "Permissions are correctly set for Amazon Bedrock logs."
-                      # when logging is enabled, and forwarding those to Firehose
-                      # fails Parquet conversion with DataFormatConversion.ParseError.
-                      try:
-                          parsed = json.loads(msg)
-                      except (ValueError, TypeError):
-                          continue
-                      if not isinstance(parsed, dict):
-                          continue
-                      # Flatten nested identity.arn to identity_arn for Glue schema
-                      identity = parsed.get('identity')
-                      parsed['identity_arn'] = (
-                          identity.get('arn', '') if isinstance(identity, dict) else ''
-                      )
-                      lines.append(json.dumps(parsed))
-
-                  if not lines:
-                      output.append({'recordId': record['recordId'],
-                                     'result': 'Dropped',
-                                     'data': record['data']})
-                      continue
-
-                  # Firehose expects one record per invocation — join with newlines
-                  combined = '\n'.join(lines) + '\n'
-                  output.append({'recordId': record['recordId'],
-                                 'result': 'Ok',
-                                 'data': base64.b64encode(combined.encode('utf-8')).decode('utf-8')})
-              return {'records': output}
-      Tags:
-        - Key: FinOps
-          Value: bedrock-firehose-data-lake
-
-  CWLUnpackFunctionPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !GetAtt CWLUnpackFunction.Arn
-      Action: lambda:InvokeFunction
-      Principal: firehose.amazonaws.com
-      SourceArn: !Sub 'arn:aws:firehose:${AWS::Region}:${AWS::AccountId}:deliverystream/bedrock-invocations-v2'
-      SourceAccount: !Ref AWS::AccountId
-
-  # Also grant FirehoseRole permission to invoke the Lambda
-  FirehoseLambdaInvokePolicy:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      ManagedPolicyName: bedrock-firehose-lambda-invoke
-      Roles:
-        - !Ref FirehoseRole
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Action: lambda:InvokeFunction
-            Resource: !GetAtt CWLUnpackFunction.Arn
-
-  # ---------------------------------------------------------------------------
-  # Kinesis Data Firehose Delivery Stream
-  # DirectPut type, inline JSON->Parquet conversion, dynamic partitioning
-  # Lambda processor unpacks CWL gzip envelopes before JQ extraction.
+  # Amazon Data Firehose Delivery Stream
+  # DirectPut type, native CloudWatch Logs decompression and message extraction,
+  # followed by inline JSON-to-Parquet conversion.
   # Satisfies: Requirements 2.1-2.11, 12.6, 13.1
   # ---------------------------------------------------------------------------
   FirehoseDeliveryStream:
@@ -756,11 +662,11 @@ Resources:
     DependsOn:
       - BedrockLogsGlueTable
       - FirehoseRolePolicy
-      - FirehoseLambdaInvokePolicy
-      - CWLUnpackFunctionPermission
     Properties:
       DeliveryStreamName: bedrock-invocations-v2
       DeliveryStreamType: DirectPut
+      DeliveryStreamEncryptionConfigurationInput:
+        KeyType: AWS_OWNED_CMK
       ExtendedS3DestinationConfiguration:
         RoleARN: !GetAtt FirehoseRole.Arn
         BucketARN: !GetAtt FirehoseDataLakeBucket.Arn
@@ -793,17 +699,16 @@ Resources:
         ProcessingConfiguration:
           Enabled: true
           Processors:
-            # Decompress CWL gzip+base64 envelopes into plain JSON lines
-            - Type: Lambda
+            # CloudWatch Logs subscriptions send gzip-compressed envelopes.
+            - Type: Decompression
               Parameters:
-                - ParameterName: LambdaArn
-                  ParameterValue: !GetAtt CWLUnpackFunction.Arn
-                - ParameterName: NumberOfRetries
-                  ParameterValue: '3'
-                - ParameterName: BufferSizeInMBs
-                  ParameterValue: '3'
-                - ParameterName: BufferIntervalInSeconds
-                  ParameterValue: '60'
+                - ParameterName: CompressionFormat
+                  ParameterValue: GZIP
+            # Emit only each log event's message before Parquet conversion.
+            - Type: CloudWatchLogProcessing
+              Parameters:
+                - ParameterName: DataMessageExtraction
+                  ParameterValue: 'true'
         CloudWatchLoggingOptions:
           Enabled: true
           LogGroupName: !Ref FirehoseLogGroup
