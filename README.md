@@ -16,7 +16,7 @@ This sample shows how to attribute Amazon Bedrock token usage and estimated cost
 
 ## Architecture
 
-![Bedrock Data Lake Architecture](./bedrock-firehose-architecture.jpg)
+![Bedrock Data Lake Architecture](./bedrock-firehose-architecture.svg)
 
 ```text
 Source account(s)
