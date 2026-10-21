@@ -132,6 +132,8 @@ Resources:
   # CloudWatch Logs subscription filter pointing at the central CWL Destination
   # The destination in the central account handles delivery to Firehose. The
   # sender-account role is required for an organization-scoped destination policy.
+  # Filter on Bedrock's documented schema type so setup notices and other
+  # non-invocation messages never reach Firehose's Parquet converter.
   # ---------------------------------------------------------------------------
   BedrockCWLSubscriptionFilter:
     Type: AWS::Logs::SubscriptionFilter
@@ -139,7 +141,7 @@ Resources:
       LogGroupName: !Ref BedrockLogsGroup
       DestinationArn: !Ref CentralCWLDestinationArn
       RoleArn: !GetAtt CWLSubscriptionFilterRole.Arn
-      FilterPattern: ''
+      FilterPattern: '{ $.schemaType = "ModelInvocationLog" }'
       FilterName: bedrock-firehose-subscription
 
 Outputs:

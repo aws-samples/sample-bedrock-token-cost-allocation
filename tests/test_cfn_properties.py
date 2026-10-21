@@ -140,7 +140,6 @@ FIREHOSE_ROLE_ALLOWED_ACTIONS = {
     "kms:DescribeKey",
     "logs:PutLogEvents",
     "logs:CreateLogStream",
-    "lambda:InvokeFunction",
 }
 
 
@@ -150,7 +149,7 @@ def test_firehose_role_least_privilege(central_template):
     
     The FirehoseRole policy must:
     - Not have any statement with Resource: "*"
-    - Only contain allowed actions for S3, Glue, KMS, CloudWatch Logs, and Lambda
+    - Only contain allowed actions for S3, Glue, KMS, and CloudWatch Logs
     """
     # Check FirehoseRolePolicy
     statements = get_policy_statements(central_template, "FirehoseRolePolicy")
@@ -173,16 +172,6 @@ def test_firehose_role_least_privilege(central_template):
                     f"FirehoseRolePolicy has unauthorized action: {action}"
                 )
     
-    # Also check FirehoseLambdaInvokePolicy
-    lambda_statements = get_policy_statements(central_template, "FirehoseLambdaInvokePolicy")
-    for stmt in lambda_statements:
-        resources = normalize_resources(stmt.get("Resource"))
-        for resource in resources:
-            if isinstance(resource, str):
-                assert resource != "*", (
-                    "FirehoseLambdaInvokePolicy has Resource: '*'"
-                )
-
 
 # ---------------------------------------------------------------------------
 # Test 2.4: Cross-account delivery uses the CloudWatch Logs destination only
